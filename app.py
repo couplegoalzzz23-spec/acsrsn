@@ -1,207 +1,273 @@
-"""
-app.py — Dashboard Klimatologi ACS (2021–2025)
-Dibuat oleh: Senior Data Scientist & Full-Stack Streamlit Developer
-Arsitektur: Robust, Flexible Column Matching, Error-Resilient
-"""
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import numpy as np
 import os
 
-# ─────────────────────────────────────────────
-# 1. KONFIGURASI HALAMAN
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Dashboard Klimatologi ACS Roesmin Nurjadin",
-    page_icon="🌤️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+# ==========================================
+# KONFIGURASI HALAMAN & UI
+# ==========================================
+st.set_page_config(page_title="Tactical Weather Dashboard ACS", layout="wide", page_icon="🌤️")
+st.title("🌤️ Tactical Weather Dashboard - ACS")
+st.markdown("Visualisasi dan Analisis Data Aerodrome Climatological Summary (ACS) Tahun 2021-2025.")
+st.markdown("---")
+
+# ==========================================
+# FUNGSI EKSTRAKSI DATA (TAHAN BANTING)
+# ==========================================
+@st.cache_data
+def load_acs_data(filepath, categories):
+    """
+    Fungsi ini membaca 12 sheet Excel dan mengekstrak baris "Mean" secara dinamis.
+    Penjelasan Logika Ekstraksi:
+    1. Daripada menebak baris (misal: iloc[251] atau skiprows=250) yang rawan error jika 
+       Excel digeser, kode ini mencari baris yang mengandung teks "Mean" (case-insensitive).
+    2. Menggunakan method .get() sehingga jika kolom (seperti '< 1800' di bulan Januari)
+       tidak ada, kode tidak akan crash dan otomatis mengisinya dengan NaN.
+    """
+    months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+              'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+    data = []
+    
+    if not os.path.exists(filepath):
+        return pd.DataFrame(), f"File tidak ditemukan: {filepath}"
+
+    try:
+        for month in months:
+            # Menggunakan openpyxl dan membaca koma sebagai desimal sesuai setting Indonesia
+            df = pd.read_excel(filepath, sheet_name=month, engine='openpyxl')
+            
+            # Merapikan nama kolom: jadikan string dan hapus spasi berlebih
+            df.columns = df.columns.astype(str).str.strip()
+            
+            # LOGIKA EKSTRAKSI BARIS: Mencari baris yang sel-nya mengandung kata "Mean"
+            mask = df.astype(str).apply(lambda x: x.str.contains(r'(?i)^mean$', na=False)).any(axis=1)
+            
+            row_dict = {'Bulan': month}
+            
+            if mask.any():
+                mean_idx = mask.idxmax()
+                mean_row = df.iloc[mean_idx]
+                
+                for cat in categories:
+                    # Logika .get() dinamis: aman jika kolom/kategori hilang di bulan tertentu
+                    val = mean_row.get(cat, np.nan)
+                    
+                    # Normalisasi nilai jika terdeteksi sebagai string ber-koma
+                    if isinstance(val, str):
+                        val = val.replace(',', '.')
+                    
+                    try:
+                        row_dict[cat] = float(val)
+                    except ValueError:
+                        row_dict[cat] = np.nan
+            else:
+                # Jika baris Mean tidak ditemukan sama sekali di sheet tersebut
+                for cat in categories:
+                    row_dict[cat] = np.nan
+                    
+            data.append(row_dict)
+            
+        return pd.DataFrame(data), None
+    except Exception as e:
+        return pd.DataFrame(), f"Error saat membaca {filepath}: {str(e)}"
+
+# ==========================================
+# FUNGSI RENDER TABEL (RAPI & UTUH)
+# ==========================================
+def render_neat_table(df, title):
+    st.markdown(f"#### 📊 {title}")
+    if df.empty:
+        st.warning("Data kosong atau tidak dapat dimuat.")
+        return
+    
+    # Set index ke Bulan untuk tampilan yang lebih profesional
+    df_display = df.set_index('Bulan')
+    
+    # Format agar tampilan angka selalu 2 desimal, dan NaN menjadi '-'
+    styled_df = df_display.style.format(na_rep="-", precision=2)
+    st.dataframe(styled_df, use_container_width=True)
+
+# ==========================================
+# SIDEBAR NAVIGATION
+# ==========================================
+st.sidebar.header("Navigasi Parameter")
+menu = st.sidebar.radio(
+    "Pilih Parameter Cuaca:",
+    (
+        "1. Rata-rata Persentase Temperatur",
+        "2. Rata-rata Persentase Visibility",
+        "3. Distribusi Frekuensi Angin",
+        "4. Profil Variasi Diurnal RH",
+        "5. Profil Variasi Diurnal Temperature",
+        "6. Rata-rata Persentase HS"
+    )
 )
 
-# Custom CSS untuk mempercantik tampilan tabel dan spasi baris
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .main-title { text-align: center; color: #1E3A8A; font-weight: 700; margin-bottom: 2rem; }
-    .section-card { background-color: #F8FAFC; padding: 1.5rem; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 2.5rem; }
-</style>
-""", unsafe_allow_html=True)
+# ==========================================
+# LOGIKA MENU & VISUALISASI
+# ==========================================
 
-st.markdown("<h1 class='main-title'>🌤️ Dashboard Terintegrasi Aerodrome Climatological Summary (ACS)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #64748B;'>Analisis Parameter Cuaca Periode Rata-Rata Tahun 2021 – 2025</p>", unsafe_allow_html=True)
-
-# Daftar Bulan Resmi sesuai nama Sheets di Excel Anda
-BULAN_LIST = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
-
-DATA_DIR = "data"
-
-# ─────────────────────────────────────────────
-# 2. FUNGSI PEMBACAAN DATA (TAHAN BANTING)
-# ─────────────────────────────────────────────
-@st.cache_data
-def load_acs_data(file_name):
-    file_path = os.path.join(DATA_DIR, file_name)
-    if not os.path.exists(file_path):
-        return None, f"File {file_name} tidak ditemukan di folder 'data/'."
+# ---------------- MENU 1 ----------------
+if menu == "1. Rata-rata Persentase Temperatur":
+    filepath = "data/rata_rata_persentase_temperature_2021_2025.xlsx"
+    categories = ['5 - 0', '0 - 5', '5 - 10', '10 - 15', '15 - 20', '20 - 25', '25 - 30', '30 - 35', '> 35']
+    colors = ['red', 'orange', 'yellow', 'darkblue', 'purple', 'brown', 'pink', 'grey', 'blue']
     
-    try:
-        # Membaca seluruh sheets untuk 12 bulan
-        excel_file = pd.ExcelFile(file_path)
-        monthly_values = {}
-        column_headers = None
-        
-        for bln in BULAN_LIST:
-            # Cari sheet yang cocok (toleran terhadap variasi huruf besar/kecil)
-            target_sheet = None
-            for sheet in excel_file.sheet_names:
-                if sheet.strip().lower() == bln.lower():
-                    target_sheet = sheet
-                    break
-            
-            if not target_sheet:
-                # Fallback: jika tidak ketemu, gunakan sheet berdasarkan urutan index jika tersedia
-                continue
-                
-            # Baca data sheet tanpa mengunci header terlebih dahulu untuk mencari baris MEAN
-            df_raw = pd.read_excel(excel_file, sheet_name=target_sheet, header=None)
-            
-            # Strategi Tahan Banting: Cari baris yang mengandung kata 'mean' atau baris indeks ke-249 (baris 251 di Excel)
-            mean_row_idx = None
-            for idx, row in df_raw.iterrows():
-                row_str = " ".join(row.astype(str).lower())
-                if 'mean' in row_str or 'rata' in row_str:
-                    mean_row_idx = idx
-                    break
-            
-            # Jika tidak ketemu teks 'mean', paksa tembak ke baris 249 (indeks Python untuk baris 251 Excel)
-            if mean_row_idx is None and len(df_raw) > 249:
-                mean_row_idx = 249
-            elif mean_row_idx is None:
-                mean_row_idx = len(df_raw) - 1 # baris terakhir jika file pendek
-                
-            # Ambil header kolom dari baris ke-0 atau ke-1
-            if column_headers is None:
-                column_headers = df_raw.iloc[0].astype(str).tolist()
-                # Bersihkan kolom dari karakter kosong/unnamed
-                column_headers = [col if 'unnamed' not in col.lower() else f"Kolom_{i}" for i, col in enumerate(column_headers)]
-            
-            # Ambil baris data mean tersebut
-            mean_row_data = df_raw.iloc[mean_row_idx].values
-            monthly_values[bln] = mean_row_data
-            
-        if not monthly_values:
-            return None, f"Tidak ada data sheet bulan yang cocok di file {file_name}."
-            
-        # Bentuk DataFrame Akhir
-        df_final = pd.DataFrame.from_dict(monthly_values, orient='index', columns=column_headers)
-        
-        # Bersihkan kolom pertama (biasanya kolom kategori/text 'MEAN')
-        if df_final.shape[1] > 1:
-            df_final = df_final.iloc[:, 1:] # Ambil dari kolom ke-2 dan seterusnya (angka persentase)
-            
-        # Pastikan tipe data float dan bulatkan 2 desimal
-        df_final = df_final.apply(pd.to_numeric, errors='coerce').fillna(0).round(2)
-        return df_final, None
-        
-    except Exception as e:
-        return None, f"Gagal memproses file {file_name}. Error: {str(e)}"
-
-# ─────────────────────────────────────────────
-# 3. PEMROSESAN DAN VISUALISASI DATA
-# ─────────────────────────────────────────────
-
-# --- A. TEMPERATURE ---
-st.markdown("<div class='section-card'>", unsafe_allow_html=True)
-st.subheader("📊 Rata-rata Persentase Temperatur Bulanan Tahun 2021-2025")
-df_temp, err = load_acs_data("rata_rata_persentase_temperature_2021_2025.xlsx")
-
-if err:
-    st.error(err)
-else:
-    # Plot Grafik Garis Fluktuasi
-    fig_temp = go.Figure()
-    colors_temp = ['#EF4444', '#F97316', '#FACC15', '#1E293B', '#3B82F6', '#10B981', '#8B5CF6']
+    df, error = load_acs_data(filepath, categories)
     
-    for i, col in enumerate(df_temp.columns):
-        color = colors_temp[i % len(colors_temp)]
-        fig_temp.add_trace(go.Scatter(
-            x=df_temp.index, y=df_temp[col],
-            mode='lines+markers', name=f"Kategori {col}",
-            line=dict(color=color, width=3),
-            marker=dict(size=8)
-        ))
-        
-    fig_temp.update_layout(
-        xaxis_title="Bulan", yaxis_title="Persentase Kejadian (%)",
-        hovermode="x unified", margin=dict(l=40, r=40, t=20, b=40),
-        height=450
-    )
-    st.plotly_chart(fig_temp, use_container_width=True)
-    
-    # Tabel data di bawah grafik (rapi, renggang, 2 desimal)
-    st.markdown("**Tabel Data Persentase Temperatur:**")
-    st.dataframe(df_temp.style.format("{:.2f}"), use_container_width=True)
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# --- B. WIND SPEED & WINDROSE ---
-st.markdown("<div class='section-card'>", unsafe_allow_html=True)
-st.subheader("💨 Rata-rata Persentase Kecepatan Angin & Analisis Windrose")
-df_ws, err_ws = load_acs_data("rata_rata_persentase_ws_2021_2025.xlsx")
-
-if err_ws:
-    st.error(err_ws)
-else:
-    col_g1, col_g2 = st.columns(2)
-    
-    with col_g1:
-        st.markdown("##### Grafik Tren Kecepatan Angin")
-        fig_ws = go.Figure()
-        for col in df_ws.columns:
-            fig_ws.add_trace(go.Scatter(x=df_ws.index, y=df_ws[col], mode='lines+markers', name=col))
-        fig_ws.update_layout(xaxis_title="Bulan", yaxis_title="Persentase (%)", height=400)
-        st.plotly_chart(fig_ws, use_container_width=True)
-        
-    with col_g2:
-        st.markdown("##### Interpretasi Distribusi Windrose (Polar Chart)")
-        # Mentransformasikan data kolom ws menjadi struktur polar bar
-        df_wind_melt = df_ws.reset_index().melt(id_vars='index', var_name='Kecepatan', value_name='Persentase')
-        df_wind_melt.rename(columns={'index': 'Bulan'}, inplace=True)
-        
-        fig_rose = px.bar_polar(
-            df_wind_melt, r="Persentase", theta="Bulan",
-            color="Kecepatan", template="plotly_white",
-            color_discrete_sequence=px.colors.sequential.Plasma_r
+    if error:
+        st.error(error)
+    else:
+        fig = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=cat, line=dict(color=color)))
+            
+        fig.update_layout(
+            title="Rata-rata Persentase Temperatur Bulanan Tahun 2021-2025",
+            yaxis_title="Persentase Kejadian (%)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
         )
-        fig_rose.update_layout(height=400, margin=dict(t=20, b=20))
-        st.plotly_chart(fig_rose, use_container_width=True)
-        
-    st.markdown("**Tabel Data Kecepatan Angin (WS):**")
-    st.dataframe(df_ws.style.format("{:.2f}"), use_container_width=True)
-st.markdown("</div>", unsafe_allow_html=True)
+        st.plotly_chart(fig, use_container_width=True)
+        render_neat_table(df, "Ringkasan Rata-rata Persentase Temperatur 2021–2025")
 
-
-# --- C. VISIBILITY ---
-st.markdown("<div class='section-card'>", unsafe_allow_html=True)
-st.subheader("👁️ Rata-rata Persentase Jarak Pandang (Visibility)")
-df_vis, err_vis = load_acs_data("rata_rata_persentase_visibility_2021_2025.xlsx")
-
-if err_vis:
-    st.error(err_vis)
-else:
-    colors_vis = ['#2563EB', '#F97316', '#10B981', '#DC2626', '#7C3AED', '#EAB308']
-    fig_vis = go.Figure()
-    for i, col in enumerate(df_vis.columns):
-        fig_vis.add_trace(go.Scatter(x=df_vis.index, y=df_vis[col], mode='lines+markers', name=col, line=dict(color=colors_vis[i % len(colors_vis)])))
-    fig_vis.update_layout(xaxis_title="Bulan", yaxis_title="Persentase (%)", height=400)
-    st.plotly_chart(fig_vis, use_container_width=True)
+# ---------------- MENU 2 ----------------
+elif menu == "2. Rata-rata Persentase Visibility":
+    filepath = "data/rata_rata_persentase_visibility_2021_2025.xlsx"
+    categories = ['< 200', '< 400', '< 600', '< 800', '< 1500', '< 1800', '< 3000', '< 5000', '< 8000']
+    colors = ['blue', 'brown', 'green', 'orange', 'purple', 'red', 'grey', 'black', 'yellow']
     
-    st.markdown("**Tabel Data Jarak Pandang (Visibility):**")
-    st.dataframe(df_vis.style.format("{:.2f}"), use_container_width=True)
-st.markdown("</div>", unsafe_allow_html=True)
+    df, error = load_acs_data(filepath, categories)
+    
+    if error:
+        st.error(error)
+    else:
+        fig = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=cat, line=dict(color=color)))
+            
+        fig.update_layout(
+            title="Rata-rata Persentase Visibility Bulanan Tahun 2021-2025",
+            yaxis_title="Persentase Kejadian (%)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        render_neat_table(df, "Ringkasan Rata-rata Persentase Visibility 2021–2025")
 
-st.markdown("<p style='text-align: center; font-size: 0.8rem; color: #94A3B8;'>Dashboard ACS Terintegrasi v2.0 • Berbasis Streamlit & Plotly</p>", unsafe_allow_html=True)
+# ---------------- MENU 3 ----------------
+elif menu == "3. Distribusi Frekuensi Angin":
+    filepath = "data/rata_rata_persentase_ws_2021_2025.xlsx"
+    categories = ['1 - 5', '6 - 10', '11 - 15', '16 - 20', '21 - 25', '26 - 30', '31 - 35', '36 - 45', '> 45', 'TOTAL']
+    colors = ['red', 'yellow', 'blue', 'darkgreen', 'orange', 'navy', 'purple', 'magenta', 'lightbrown', 'green']
+    
+    df, error = load_acs_data(filepath, categories)
+    
+    if error:
+        st.error(error)
+    else:
+        # Bagian A: Wind Rose (Seasonal Radial Bar)
+        # Menggunakan Bulan sebagai sumbu angular (theta) untuk menunjukkan distribusi temporal
+        st.markdown("### A. Distribusi Frekuensi Kecepatan Angin (Berdasarkan Bulan)")
+        fig_polar = go.Figure()
+        for cat, color in zip(categories[:-1], colors[:-1]): # Exclude TOTAL from windrose
+            fig_polar.add_trace(go.Barpolar(
+                r=df[cat].fillna(0),
+                theta=df['Bulan'],
+                name=cat,
+                marker_color=color
+            ))
+        fig_polar.update_layout(
+            title="Distribusi Frekuensi Arah/Musiman dan Kecepatan Angin Tahun 2021–2025",
+            polar=dict(angularaxis=dict(direction="clockwise")),
+            legend=dict(title="Wind Speed (Kts)")
+        )
+        st.plotly_chart(fig_polar, use_container_width=True)
+
+        # Bagian B: Meteogram Garis
+        st.markdown("### B. Meteogram Kecepatan Angin")
+        fig_line = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig_line.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=cat, line=dict(color=color)))
+        
+        fig_line.update_layout(
+            title="Variasi Bulanan Kecepatan Angin Tahun 2021–2025",
+            yaxis_title="Persentase Kejadian (%)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+        render_neat_table(df, "Ringkasan Frekuensi Angin 2021–2025")
+
+# ---------------- MENU 4 ----------------
+elif menu == "4. Profil Variasi Diurnal RH":
+    filepath = "data/rata_rata_jumlah_kejadian_masuk_rh_2021_2025.xlsx"
+    categories = ['0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', 'RH MAX', 'RH MIN']
+    colors = ['navy', 'orange', 'grey', 'magenta', 'darkblue', 'purple', 'brown', 'blue', 'red', 'yellow', 'green']
+    
+    df, error = load_acs_data(filepath, categories)
+    
+    if error:
+        st.error(error)
+    else:
+        fig = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=f"{cat} UTC" if cat.isdigit() else cat, line=dict(color=color)))
+            
+        fig.update_layout(
+            title="Profil Variasi Diurnal dan Ekstrem RH Tahun 2021–2025",
+            yaxis_title="Nilai RH (%)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        render_neat_table(df, "Ringkasan Statistik Bulanan RH 2021–2025")
+
+# ---------------- MENU 5 ----------------
+elif menu == "5. Profil Variasi Diurnal Temperature":
+    filepath = "data/rata_rata_jumlah_kejadian_masuk_tmaxmin_2021_2025.xlsx"
+    categories = ['0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', 'T MAX', 'T MIN']
+    colors = ['navy', 'orange', 'grey', 'magenta', 'black', 'purple', 'brown', 'blue', 'red', 'yellow', 'green']
+    
+    df, error = load_acs_data(filepath, categories)
+    
+    if error:
+        st.error(error)
+    else:
+        fig = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=f"{cat} UTC" if cat.isdigit() else cat, line=dict(color=color)))
+            
+        fig.update_layout(
+            title="Profil Variasi Diurnal dan Ekstrem Temperature Tahun 2021–2025",
+            yaxis_title="Nilai Temperature (°C)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        render_neat_table(df, "Ringkasan Statistik Bulanan Temperature 2021–2025")
+
+# ---------------- MENU 6 ----------------
+elif menu == "6. Rata-rata Persentase HS":
+    filepath = "data/rata_rata_persentase_hs_2021_2025.xlsx"
+    categories = ['< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
+    colors = ['blue', 'orange', 'green', 'red', 'purple', 'yellow']
+    
+    df, error = load_acs_data(filepath, categories)
+    
+    if error:
+        st.error(error)
+    else:
+        fig = go.Figure()
+        for cat, color in zip(categories, colors):
+            fig.add_trace(go.Scatter(x=df['Bulan'], y=df[cat], mode='lines+markers', name=cat, line=dict(color=color)))
+            
+        fig.update_layout(
+            title="Rata-rata Persentase HS Bulanan Tahun 2021-2025",
+            yaxis_title="Persentase Kejadian (%)",
+            xaxis_title="Bulan",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        render_neat_table(df, "Ringkasan Rata-rata Persentase HS 2021–2025")
