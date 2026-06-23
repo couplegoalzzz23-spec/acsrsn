@@ -13,9 +13,8 @@ st.markdown("Visualisasi dan Analisis Data Aerodrome Climatological Summary (ACS
 st.markdown("---")
 
 # ==========================================
-# ABSOLUTE PATH RESOLUTION (TAHAN BANTING DI CLOUD)
+# ABSOLUTE PATH RESOLUTION (ANTI CRASH DI CLOUD)
 # ==========================================
-# Ini memastikan script selalu mencari folder 'data' di lokasi yang sama dengan 'app.py'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
@@ -33,12 +32,10 @@ def load_acs_data(filename, categories):
         return pd.DataFrame(), f"File tidak ditemukan di sistem: {filepath}"
 
     try:
-        # Gunakan pd.ExcelFile agar bisa membaca semua sheet yang tersedia
         xls = pd.ExcelFile(filepath, engine='openpyxl')
         available_sheets = xls.sheet_names
         
         for month in target_months:
-            # PENCARIAN SHEET FLEKSIBEL (Mengabaikan spasi & huruf besar/kecil)
             matched_sheet = None
             for sheet in available_sheets:
                 if sheet.strip().lower() == month.lower():
@@ -49,9 +46,9 @@ def load_acs_data(filename, categories):
             
             if matched_sheet:
                 df = pd.read_excel(xls, sheet_name=matched_sheet)
-                df.columns = df.columns.astype(str).str.strip() # Rapikan header
+                df.columns = df.columns.astype(str).str.strip()
                 
-                # Cari baris yang memuat kata 'Mean'
+                # Cari baris yang memuat kata 'Mean' tanpa peduli kapitalisasi
                 mask = df.astype(str).apply(lambda x: x.str.contains(r'(?i)^mean$', na=False)).any(axis=1)
                 
                 if mask.any():
@@ -60,7 +57,6 @@ def load_acs_data(filename, categories):
                     
                     for cat in categories:
                         val = mean_row.get(cat, np.nan)
-                        # Normalisasi desimal Indonesia (koma -> titik)
                         if isinstance(val, str):
                             val = val.replace(',', '.')
                         try:
@@ -71,7 +67,6 @@ def load_acs_data(filename, categories):
                     for cat in categories:
                         row_dict[cat] = np.nan
             else:
-                # Jika sheet bulan tersebut benar-benar hilang/tidak ada
                 for cat in categories:
                     row_dict[cat] = np.nan
                     
@@ -114,7 +109,6 @@ menu = st.sidebar.radio(
 # LOGIKA MENU & VISUALISASI
 # ==========================================
 
-# ---------------- MENU 1 ----------------
 if menu == "1. Rata-rata Persentase Temperatur":
     filename = "rata_rata_persentase_temperature_2021_2025.xlsx"
     categories = ['5 - 0', '0 - 5', '5 - 10', '10 - 15', '15 - 20', '20 - 25', '25 - 30', '30 - 35', '> 35']
@@ -131,7 +125,6 @@ if menu == "1. Rata-rata Persentase Temperatur":
         st.plotly_chart(fig, use_container_width=True)
         render_neat_table(df, "Ringkasan Rata-rata Persentase Temperatur 2021–2025")
 
-# ---------------- MENU 2 ----------------
 elif menu == "2. Rata-rata Persentase Visibility":
     filename = "rata_rata_persentase_visibility_2021_2025.xlsx"
     categories = ['< 200', '< 400', '< 600', '< 800', '< 1500', '< 1800', '< 3000', '< 5000', '< 8000']
@@ -148,7 +141,6 @@ elif menu == "2. Rata-rata Persentase Visibility":
         st.plotly_chart(fig, use_container_width=True)
         render_neat_table(df, "Ringkasan Rata-rata Persentase Visibility 2021–2025")
 
-# ---------------- MENU 3 ----------------
 elif menu == "3. Distribusi Frekuensi Angin":
     filename = "rata_rata_persentase_ws_2021_2025.xlsx"
     categories = ['1 - 5', '6 - 10', '11 - 15', '16 - 20', '21 - 25', '26 - 30', '31 - 35', '36 - 45', '> 45', 'TOTAL']
@@ -173,7 +165,6 @@ elif menu == "3. Distribusi Frekuensi Angin":
         st.plotly_chart(fig_line, use_container_width=True)
         render_neat_table(df, "Ringkasan Frekuensi Angin 2021–2025")
 
-# ---------------- MENU 4 ----------------
 elif menu == "4. Profil Variasi Diurnal RH":
     filename = "rata_rata_jumlah_kejadian_masuk_rh_2021_2025.xlsx"
     categories = ['0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', 'RH MAX', 'RH MIN']
@@ -190,7 +181,6 @@ elif menu == "4. Profil Variasi Diurnal RH":
         st.plotly_chart(fig, use_container_width=True)
         render_neat_table(df, "Ringkasan Statistik Bulanan RH 2021–2025")
 
-# ---------------- MENU 5 ----------------
 elif menu == "5. Profil Variasi Diurnal Temperature":
     filename = "rata_rata_jumlah_kejadian_masuk_tmaxmin_2021_2025.xlsx"
     categories = ['0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', 'T MAX', 'T MIN']
@@ -207,7 +197,6 @@ elif menu == "5. Profil Variasi Diurnal Temperature":
         st.plotly_chart(fig, use_container_width=True)
         render_neat_table(df, "Ringkasan Statistik Bulanan Temperature 2021–2025")
 
-# ---------------- MENU 6 ----------------
 elif menu == "6. Rata-rata Persentase HS":
     filename = "rata_rata_persentase_hs_2021_2025.xlsx"
     categories = ['< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
