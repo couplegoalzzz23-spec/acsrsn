@@ -1,388 +1,170 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 import plotly.express as px
-import plotly.graph_objects as gr
 from plotly.subplots import make_subplots
 import os
 
-# 1. PAGE CONFIGURATION
-st.set_page_config(
-    page_title="Advanced Weather Analytics Dashboard",
-    page_icon="⛈️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- 1. KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="Dashboard Klimatologi", page_icon="🌤️", layout="wide")
 
-# Custom CSS to enhance the layout
-st.markdown("""
-    <style>
-    .main-header {
-        font-size:28px !important;
-        font-weight: bold;
-        color: #1E3A8A;
-        margin-bottom: 20px;
-    }
-    .status-box {
-        padding: 10px;
-        border-radius: 5px;
-        margin-bottom: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="main-header">⛈️ Climate & Weather Analytics Dashboard (2021-2025)</div>', unsafe_allow_html=True)
-
-# 2. DATA LOADING & CACHING LAYER WITH EXTRA ROBUSTNESS
+# Folder utama sesuai instruksi GitHub Anda
 DATA_DIR = "data_acsrsn"
 
+# --- 2. FUNGSI PEMBACAAN & PEMBERSIHAN DATA TAHAN BANTING ---
 @st.cache_data
-def load_temperature_extremes():
-    file_path = os.path.join(DATA_DIR, "t_max_min_2021_2025.csv")
-    if not os.path.exists(file_path):
-        return None
-    try:
-        # Read raw data
-        df = pd.read_csv(file_path)
-        # Apply user rules: index 0 is subheader, do iloc[1:]
-        df_clean = df.iloc[1:].copy().reset_index(drop=True)
-        
-        # Target columns to convert to float
-        target_cols = ['DAILY', 'TEMPERATURE', 'Unnamed: 11']
-        for col in target_cols:
-            if col in df_clean.columns:
-                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-        
-        # Rename columns logically if they exist for better readability
-        rename_map = {}
-        if 'DAILY' in df_clean.columns: rename_map['DAILY'] = 'Mean Temperature (°C)'
-        if 'TEMPERATURE' in df_clean.columns: rename_map['TEMPERATURE'] = 'Max Temperature (°C)'
-        if 'Unnamed: 11' in df_clean.columns: rename_map['Unnamed: 11'] = 'Min Temperature (°C)'
-        df_clean.rename(columns=rename_map, inplace=True)
-        
-        return df_clean
-    except Exception as e:
-        st.error(f"Error processing t_max_min_2021_2025.csv: {e}")
-        return None
-
-@st.cache_data
-def load_humidity_data():
-    file_path = os.path.join(DATA_DIR, "rh_max_min_2021_2025.csv")
-    if not os.path.exists(file_path):
-        return None
-    try:
-        df = pd.read_csv(file_path)
-        df_clean = df.iloc[1:].copy().reset_index(drop=True)
-        
-        # Convert numeric columns to float (excluding the first column which usually represents the time/month)
-        for col in df_clean.columns[1:]:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-            
-        return df_clean
-    except Exception as e:
-        st.error(f"Error processing rh_max_min_2021_2025.csv: {e}")
-        return None
-
-@st.cache_data
-def load_wind_data():
-    file_path = os.path.join(DATA_DIR, "wind_2021_2025.csv")
-    if not os.path.exists(file_path):
-        return None, None
-    try:
-        # Read without headers to manually slice stacked tables safely
-        df = pd.read_csv(file_path, header=None)
-        
-        # Table 1: Wind Direction (iloc[1:13], columns from index 2 to end)
-        # Row 0 contains direction labels (N, NE, E, etc.)
-        dir_headers = df.iloc[0, 2:].dropna().tolist()
-        dir_months = df.iloc[1:13, 0].values # Month column
-        dir_values = df.iloc[1:13, 2:].copy()
-        
-        df_dir = pd.DataFrame(dir_values.values, columns=dir_headers[:dir_values.shape[1]])
-        df_dir.insert(0, 'Month', dir_months)
-        for col in df_dir.columns[1:]:
-            df_dir[col] = pd.to_numeric(df_dir[col], errors='coerce').fillna(0)
-            
-        # Table 2: Wind Speed (iloc[15:27, 0:11])
-        # Row 14 usually contains speed range headers
-        spd_headers = df.iloc[14, 1:11].dropna().tolist()
-        spd_months = df.iloc[15:27, 0].values
-        spd_values = df.iloc[15:27, 1:11].copy()
-        
-        df_spd = pd.DataFrame(spd_values.values, columns=spd_headers[:spd_values.shape[1]])
-        df_spd.insert(0, 'Month', spd_months)
-        for col in df_spd.columns[1:]:
-            df_spd[col] = pd.to_numeric(df_spd[col], errors='coerce').fillna(0)
-            
-        return df_dir, df_spd
-    except Exception as e:
-        st.error(f"Error processing wind_2021_2025.csv: {e}")
-        return None, None
-
-@st.cache_data
-def load_normal_file(filename):
-    file_path = os.path.join(DATA_DIR, filename)
-    if not os.path.exists(file_path):
-        return None
-    try:
-        df = pd.read_csv(file_path)
-        for col in df.columns[1:]:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception as e:
-        st.error(f"Error processing {filename}: {e}")
-        return None
-
-# Load all datasets securely
-df_temp_ext = load_temperature_extremes()
-df_rh = load_humidity_data()
-df_wind_dir, df_wind_spd = load_wind_data()
-df_visibility = load_normal_file("visibility_2021_2025.csv")
-df_hs = load_normal_file("hs_2021_2025.csv")
-df_temp_dist = load_normal_file("temperature_2021_2025.csv")
-
-# Sidebar Status Panel
-st.sidebar.header("📁 File Status Check")
-files_to_check = {
-    "t_max_min_2021_2025.csv": df_temp_ext is not None,
-    "rh_max_min_2021_2025.csv": df_rh is not None,
-    "wind_2021_2025.csv": df_wind_dir is not None and df_wind_spd is not None,
-    "visibility_2021_2025.csv": df_visibility is not None,
-    "hs_2021_2025.csv": df_hs is not None,
-    "temperature_2021_2025.csv": df_temp_dist is not None
-}
-
-for file, exists in files_to_check.items():
-    if exists:
-        st.sidebar.success(f"✔️ {file} Loaded")
-    else:
-        st.sidebar.error(f"❌ {file} Missing/Error")
-
-# 3. TABS SETUP
-tabs = st.tabs(["📊 Meteogram & Data", "💨 Windrose Analysis", "🌫️ Visibility & Cloud Base (Hs)", "🌡️ Temp Distribution"])
-
-# ==========================================
-# TAB 1: METEOGRAM (DUAL AXIS CHART)
-# ==========================================
-with tabs[0]:
-    st.subheader("Meteogram Interaktif & Integrasi Data")
+def load_data():
+    # Menyesuaikan dengan nama file CSV bersih Anda
+    files = {
+        "t": "t_max_min_2021_2025.csv",
+        "rh": "rh_max_min_2021_2025.csv",
+        "vis": "visibility_2021_2025.csv",
+        "hs": "hs_2021_2025.csv",
+        "wind": "wind_2021_2025.csv",
+        "temp_dist": "temperature_2021_2025.csv"
+    }
     
-    if df_temp_ext is not None and df_rh is not None:
-        # Determine X-axis (Months or Index labels)
-        x_axis_labels = df_temp_ext.iloc[:, 0] if not df_temp_ext.empty else list(range(1, 13))
+    data = {}
+    for k, v in files.items():
+        filepath = os.path.join(DATA_DIR, v)
+        if not os.path.exists(filepath):
+            st.error(f"⚠️ SISTEM ERROR: File tidak ditemukan di path '{filepath}'. Pastikan folder '{DATA_DIR}' sudah benar dan file berektensi .csv murni.")
+            st.stop()
         
-        # Get column names for selection / visualization
-        temp_cols = [c for c in df_temp_ext.columns if 'Temperature' in c or c in ['DAILY', 'TEMPERATURE', 'Unnamed: 11']]
-        rh_cols = [c for c in df_rh.columns if c != df_rh.columns[0]]
-        
-        col_sel1, col_sel2 = st.columns(2)
-        with col_sel1:
-            selected_temp = st.selectbox("Pilih Parameter Suhu (Y-Primer):", temp_cols, index=0)
-        with col_sel2:
-            selected_rh = st.selectbox("Pilih Parameter Kelembaban / RH (Y-Sekunder):", rh_cols, index=0)
-            
-        # Create dual-axis subplot
-        fig_meteogram = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # Primary Y-Axis: Temperature
-        fig_meteogram.add_trace(
-            gr.Scatter(
-                x=x_axis_labels, 
-                y=df_temp_ext[selected_temp], 
-                name=selected_temp,
-                mode='lines+markers',
-                line=dict(color='#EF4444', width=3)
-            ),
-            secondary_y=False,
-        )
-        
-        # Secondary Y-Axis: RH
-        fig_meteogram.add_trace(
-            gr.Scatter(
-                x=x_axis_labels, 
-                y=df_rh[selected_rh], 
-                name=f"{selected_rh} (RH)",
-                mode='lines+markers',
-                line=dict(color='#3B82F6', width=3, dash='dash')
-            ),
-            secondary_y=True,
-        )
-        
-        # Layout tuning
-        fig_meteogram.update_layout(
-            title_text=f"Meteogram: {selected_temp} vs {selected_rh}",
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=20, r=20, t=60, b=20)
-        )
-        
-        fig_meteogram.update_xaxes(title_text="Periode / Bulan")
-        fig_meteogram.update_yaxes(title_text="Suhu (°C)", secondary_y=False)
-        fig_meteogram.update_yaxes(title_text="Kelembaban Nisbi / RH (%)", secondary_y=True)
-        
-        st.plotly_chart(fig_meteogram, use_container_width=True)
-        
-        # Combined Table Display Below
-        st.subheader("Tabel Gabungan Parameter Utama")
-        # Merge safely on first column or index
-        combined_df = pd.DataFrame({
-            'Periode': x_axis_labels,
-            selected_temp: df_temp_ext[selected_temp],
-            selected_rh: df_rh[selected_rh]
-        })
-        st.dataframe(combined_df.style.background_gradient(cmap="Blues", subset=[selected_rh])
-                                     .background_gradient(cmap="Reds", subset=[selected_temp]), 
-                     use_container_width=True)
-    else:
-        st.warning("Data Suhu atau RH tidak tersedia untuk membuat Meteogram.")
+        # Baca sebagai CSV
+        data[k] = pd.read_csv(filepath)
 
-# ==========================================
-# TAB 2: WINDROSE ANALYSIS
-# ==========================================
-with tabs[1]:
-    st.subheader("Analisis Windrose (Joint Frequency Probability)")
+    # A. Ekstraksi Suhu & RH (Membongkar baris sub-header)
+    df_t = data["t"].iloc[1:].reset_index(drop=True).copy()
+    df_t.rename(columns={'DAILY': 'T_Mean', 'TEMPERATURE': 'T_Max', 'Unnamed: 11': 'T_Min'}, inplace=True)
+    df_t[['T_Mean', 'T_Max', 'T_Min']] = df_t[['T_Mean', 'T_Max', 'T_Min']].astype(float)
     
-    if df_wind_dir is not None and df_wind_spd is not None:
-        mode_windrose = st.selectbox(
-            "Pilih Cakupan Analisis Windrose:",
-            ["Windrose Keseluruhan (Tahunan)", "Windrose per Bulan"]
-        )
+    df_rh = data["rh"].iloc[1:].reset_index(drop=True).copy()
+    df_rh.rename(columns={'DAILY': 'RH_Mean', 'RH': 'RH_Max', 'Unnamed: 11': 'RH_Min'}, inplace=True)
+    df_rh[['RH_Mean', 'RH_Max', 'RH_Min']] = df_rh[['RH_Mean', 'RH_Max', 'RH_Min']].astype(float)
+
+    # B. Ekstraksi Wind (Arah dan Kecepatan dari 1 file CSV)
+    wind_raw = data["wind"]
+    
+    # B1. Arah Angin (Baris 1 s/d 12)
+    df_wd = wind_raw.iloc[1:13].copy()
+    dir_labels = ['N (360°)', 'NNE (30°)', 'ENE (60°)', 'E (90°)', 'ESE (120°)', 'SSE (150°)', 'S (180°)', 'SSW (210°)', 'WSW (240°)', 'W (270°)', 'WNW (300°)', 'NNW (330°)']
+    df_wd.columns = ['DATE', 'CALM'] + dir_labels
+    for col in df_wd.columns[1:]:
+        df_wd[col] = pd.to_numeric(df_wd[col], errors='coerce').fillna(0)
         
-        # Establish months based on data
-        available_months = df_wind_dir['Month'].unique()
+    # B2. Kecepatan Angin (Baris 15 s/d 26, ambil hanya 11 kolom pertama)
+    df_ws = wind_raw.iloc[15:27, 0:11].copy()
+    spd_labels = ['1 - 5', '6 - 10', '11 - 15', '16 - 20', '21 - 25', '26 - 30', '31 - 35', '36 - 45', '> 45']
+    df_ws.columns = ['DATE', 'CALM'] + spd_labels
+    for col in df_ws.columns[1:]:
+        df_ws[col] = pd.to_numeric(df_ws[col], errors='coerce').fillna(0)
         
-        if mode_windrose == "Windrose per Bulan":
-            selected_month = st.selectbox("Pilih Bulan:", available_months)
-            # Filter rows for specific month
-            dir_row = df_wind_dir[df_wind_dir['Month'] == selected_month].iloc[0, 1:]
-            spd_row = df_wind_spd[df_wind_spd['Month'] == selected_month].iloc[0, 1:]
+    return df_t, df_rh, df_wd, df_ws, dir_labels, spd_labels, data["vis"], data["hs"], data["temp_dist"]
+
+# Panggil load data
+df_t, df_rh, df_wd, df_ws, dir_labels, spd_labels, df_vis, df_hs, df_temp_dist = load_data()
+
+# --- 3. UI DASHBOARD ---
+st.title("🌤️ Dashboard Klimatologi Udara (2021-2025)")
+st.markdown("Visualisasi Data Cuaca Interaktif berdasarkan arsip observasi lapangan.")
+
+tab1, tab2, tab3 = st.tabs(["📈 Meteogram & Suhu", "🧭 Windrose Angin", "📊 Visibility & Awan"])
+
+# --- TAB 1: METEOGRAM & TABEL ---
+with tab1:
+    st.subheader("Meteogram: Fluktuasi Suhu vs Kelembaban (RH)")
+    
+    fig_meteo = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Plot Suhu (Sumbu Y Kiri)
+    fig_meteo.add_trace(go.Scatter(x=df_t['DATE'], y=df_t['T_Max'], name='Suhu Max', mode='lines+markers', line=dict(color='#ff6b6b', dash='dash')), secondary_y=False)
+    fig_meteo.add_trace(go.Scatter(x=df_t['DATE'], y=df_t['T_Mean'], name='Suhu Mean', mode='lines+markers', line=dict(color='#c0392b', width=3)), secondary_y=False)
+    fig_meteo.add_trace(go.Scatter(x=df_t['DATE'], y=df_t['T_Min'], name='Suhu Min', mode='lines+markers', line=dict(color='#f39c12', dash='dash')), secondary_y=False)
+    
+    # Plot RH (Sumbu Y Kanan)
+    fig_meteo.add_trace(go.Scatter(x=df_rh['DATE'], y=df_rh['RH_Max'], name='RH Max', mode='lines', line=dict(color='#74b9ff', dash='dot')), secondary_y=True)
+    fig_meteo.add_trace(go.Scatter(x=df_rh['DATE'], y=df_rh['RH_Mean'], name='RH Mean', mode='lines', line=dict(color='#0984e3', width=3)), secondary_y=True)
+    fig_meteo.add_trace(go.Scatter(x=df_rh['DATE'], y=df_rh['RH_Min'], name='RH Min', mode='lines', line=dict(color='#00cec9', dash='dot')), secondary_y=True)
+    
+    fig_meteo.update_layout(height=450, hovermode='x unified', margin=dict(t=30, b=10))
+    fig_meteo.update_yaxes(title_text="<b>Suhu (°C)</b>", secondary_y=False)
+    fig_meteo.update_yaxes(title_text="<b>Kelembaban Relatif (%)</b>", secondary_y=True)
+    
+    st.plotly_chart(fig_meteo, use_container_width=True)
+    
+    # Tabel Data
+    st.markdown("#### 📋 Tabel Ringkasan Meteogram")
+    df_combined = pd.merge(df_t[['DATE', 'T_Max', 'T_Mean', 'T_Min']], df_rh[['DATE', 'RH_Max', 'RH_Mean', 'RH_Min']], on='DATE')
+    st.dataframe(df_combined.style.format(precision=2), use_container_width=True)
+
+
+# --- TAB 2: WINDROSE ---
+with tab2:
+    st.subheader("Distribusi Arah dan Kecepatan Angin (Windrose)")
+    
+    col_w1, col_w2 = st.columns([1, 3])
+    with col_w1:
+        opsi_waktu = ["Keseluruhan (Tahunan)"] + df_wd['DATE'].tolist()
+        pilihan_waktu = st.selectbox("Pilih Periode Pengamatan:", opsi_waktu)
+        st.info("Windrose mensimulasikan probabilitas gabungan antara kecepatan dan arah angin bulanan berdasarkan observasi klimatologis.")
+    
+    def calc_windrose(period):
+        if period == "Keseluruhan (Tahunan)":
+            d_dir = df_wd[dir_labels].mean()
+            d_spd = df_ws[spd_labels].mean()
         else:
-            # Average/Sum across the entire period for Annual profile
-            dir_row = df_wind_dir.iloc[:, 1:].mean()
-            spd_row = df_wind_spd.iloc[:, 1:].mean()
+            d_dir = df_wd[df_wd['DATE'] == period][dir_labels].iloc[0]
+            d_spd = df_ws[df_ws['DATE'] == period][spd_labels].iloc[0]
             
-        # Normalize weights to derive probabilities P(Direction) and P(Speed)
-        total_dir = dir_row.sum() if dir_row.sum() > 0 else 1
-        total_spd = spd_row.sum() if spd_row.sum() > 0 else 1
+        total_spd = d_spd.sum()
+        if total_spd == 0: total_spd = 1
         
-        p_dir = dir_row / total_dir
-        p_spd = spd_row / total_spd
-        
-        # Compute Joint Frequency Probability: P(D, S) = P(D) * P(S) * Total Sample Baseline
-        # Reconstructing a joint distribution matrix using the marginal distributions
-        joint_records = []
-        for direction, prob_d in p_dir.items():
-            for speed_range, prob_s in p_spd.items():
-                # Re-scale back to percentage for presentation
-                joint_frequency = prob_d * prob_s * 100 
-                joint_records.append({
-                    'Direction': direction,
-                    'Speed Range': speed_range,
-                    'Frequency (%)': round(joint_frequency, 3)
-                })
-                
-        df_joint = pd.DataFrame(joint_records)
-        
-        # Plotting using px.bar_polar
-        fig_windrose = px.bar_polar(
-            df_joint,
-            r="Frequency (%)",
-            theta="Direction",
-            color="Speed Range",
-            color_discrete_sequence=px.colors.sequential.Plasma_r,
-            title=f"Windrose Configuration: {mode_windrose}" + (f" ({selected_month})" if mode_windrose == "Windrose per Bulan" else " (Annual Average)"),
-            template="plotly_white"
-        )
-        
-        fig_windrose.update_layout(
-            polar=dict(
-                radialaxis=dict(ticksuffix="%", angle=45),
-                angularaxis=dict(direction="clockwise", period=12) # Setup neat standard compass arrangement
-            ),
-            margin=dict(l=40, r=40, t=80, b=40)
-        )
-        
-        st.plotly_chart(fig_windrose, use_container_width=True)
-        
-        # Show breakdown matrix options
-        with st.expander("Lihat Detail Matriks Probabilitas Gabungan (Joint Frequency Table)"):
-            pivot_joint = df_joint.pivot(index='Direction', columns='Speed Range', values='Frequency (%)')
-            st.dataframe(pivot_joint, use_container_width=True)
-    else:
-        st.warning("Data Arah atau Kecepatan Angin (wind_2021_2025.csv) tidak terdeteksi.")
+        data_plot = []
+        for direction in dir_labels:
+            prob_dir = d_dir[direction]
+            for speed in spd_labels:
+                prob_spd = d_spd[speed]
+                # Joint frequency (Proporsi Independen)
+                joint_freq = prob_dir * (prob_spd / total_spd)
+                if joint_freq > 0:
+                    data_plot.append({"Arah": direction, "Kecepatan (Knots)": speed, "Frekuensi (%)": joint_freq})
+                    
+        return pd.DataFrame(data_plot)
 
-# ==========================================
-# TAB 3: VISIBILITY & CLOUD BASE (HS)
-# ==========================================
-with tabs[2]:
-    st.subheader("Analisis Tren Visibility & Tinggi Dasar Awan (Hs)")
-    
+    with col_w2:
+        df_plot_wind = calc_windrose(pilihan_waktu)
+        
+        if df_plot_wind.empty:
+            st.warning("Data angin tidak tersedia untuk periode ini.")
+        else:
+            fig_wr = px.bar_polar(
+                df_plot_wind,
+                r="Frekuensi (%)",
+                theta="Arah",
+                color="Kecepatan (Knots)",
+                color_discrete_sequence=px.colors.sequential.Tealgrn,
+                template="plotly_white"
+            )
+            fig_wr.update_layout(margin=dict(t=20, b=20), height=550)
+            st.plotly_chart(fig_wr, use_container_width=True)
+
+
+# --- TAB 3: VISIBILITY & AWAN ---
+with tab3:
     col_v1, col_v2 = st.columns(2)
     
     with col_v1:
-        st.markdown("**Sebaran Keterangan Jarak Pandang (Visibility)**")
-        if df_visibility is not None:
-            lbl_col = df_visibility.columns[0]
-            val_cols = df_visibility.columns[1:]
-            
-            # Line Chart for Visibility Trends across categories
-            fig_vis = px.line(
-                df_visibility, 
-                x=lbl_col, 
-                y=val_cols, 
-                markers=True,
-                title="Tren Distribusi Jarak Pandang (Visibility)",
-                labels={lbl_col: "Periode"}
-            )
-            fig_vis.update_layout(legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(fig_vis, use_container_width=True)
-            st.dataframe(df_visibility, use_container_width=True)
-        else:
-            st.info("File `visibility_2021_2025.csv` tidak ditemukan.")
-            
+        st.subheader("Jarak Pandang (Visibility)")
+        vis_melt = df_vis.melt(id_vars=['DATE'], var_name='Range Jarak Pandang', value_name='Frekuensi (%)')
+        fig_v = px.bar(vis_melt, x='DATE', y='Frekuensi (%)', color='Range Jarak Pandang', barmode='stack', color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig_v.update_layout(xaxis_title="Bulan", yaxis_title="Frekuensi (%)")
+        st.plotly_chart(fig_v, use_container_width=True)
+        
     with col_v2:
-        st.markdown("**Analisis Tinggi Dasar Awan (Hs)**")
-        if df_hs is not None:
-            lbl_col_hs = df_hs.columns[0]
-            val_cols_hs = df_hs.columns[1:]
-            
-            # Stacked Bar Chart for Cloud Base Profile
-            fig_hs_chart = px.bar(
-                df_hs,
-                x=lbl_col_hs,
-                y=val_cols_hs,
-                title="Distribusi Tinggi Dasar Awan (Hs)",
-                labels={lbl_col_hs: "Periode"}
-            )
-            fig_hs_chart.update_layout(legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(fig_hs_chart, use_container_width=True)
-            st.dataframe(df_hs, use_container_width=True)
-        else:
-            st.info("File `hs_2021_2025.csv` tidak ditemukan.")
-
-# ==========================================
-# TAB 4: TEMPERATURE DISTRIBUTION
-# ==========================================
-with tabs[3]:
-    st.subheader("Distribusi Frekuensi Temperatur")
-    if df_temp_dist is not None:
-        lbl_td = df_temp_dist.columns[0]
-        val_td = df_temp_dist.columns[1:]
-        
-        st.markdown("Visualisasi ini menggambarkan seberapa sering temperatur berada pada rentang tertentu sepanjang tahun.")
-        
-        # Interactive Multi-line or Area representation for distribution
-        fig_dist = px.area(
-            df_temp_dist,
-            x=lbl_td,
-            y=val_td,
-            title="Kurva Distribusi Frekuensi Suhu Udara",
-            labels={lbl_td: "Kelas Interval Suhu (°C)"},
-            line_shape="spline"
-        )
-        fig_dist.update_layout(hovermode="x unified")
-        st.plotly_chart(fig_dist, use_container_width=True)
-        
-        st.dataframe(df_temp_dist, use_container_width=True)
-    else:
-        st.info("File `temperature_2021_2025.csv` tidak ditemukan.")
+        st.subheader("Tinggi Dasar Awan (Cloud Base)")
+        hs_melt = df_hs.melt(id_vars=['DATE'], var_name='Ketinggian Awan', value_name='Frekuensi (%)')
+        fig_h = px.bar(hs_melt, x='DATE', y='Frekuensi (%)', color='Ketinggian Awan', barmode='stack', color_discrete_sequence=px.colors.sequential.Purples)
+        fig_h.update_layout(xaxis_title="Bulan", yaxis_title="Frekuensi (%)")
+        st.plotly_chart(fig_h, use_container_width=True)
