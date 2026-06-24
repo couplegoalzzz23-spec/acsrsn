@@ -5,7 +5,7 @@ import io
 import os
 
 # ==============================================================================
-# 1. KONFIGURASI HALAMAN & UI UTAMA
+# 1. KONFIGURASI HALAMAN & ANTARMUKA (UI) UTAMA
 # ==============================================================================
 st.set_page_config(
     page_title="Dashboard Meteorologi Interaktif (2021-2025)",
@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Kustomisasi Gaya Dashboard via CSS Gaya Minimalis Modern
+# Desain CSS Kustom Minimalis Modern & Rapi
 st.markdown("""
     <style>
     .main-title { font-size: 30px; font-weight: 700; color: #1E3A8A; margin-bottom: 2px; }
@@ -28,11 +28,11 @@ MONTHS = [
 ]
 
 # ==============================================================================
-# 2. FUNGSI PEMPROSESAN & UTALITAS DATA (ROBUST PIPELINE)
+# 2. DATA PIPELINE ENGINE (AMAN & AMBISI KUALITAS TINGGI)
 # ==============================================================================
 
 def find_file(filename):
-    """Mencari berkas di direktori utama atau di dalam folder sub-direktori secara aman"""
+    """Mencari lokasi file di direktori utama atau subfolder secara aman"""
     if os.path.exists(filename):
         return filename
     potential_path = os.path.join("data_acsrsn", filename)
@@ -41,30 +41,30 @@ def find_file(filename):
     return filename
 
 def clean_numeric_dataframe(df, exclude_cols=['DATE']):
-    """Membersihkan whitespace, menormalisasi desimal, dan konversi ke float secara aman"""
+    """Membersihkan whitespace, menormalisasi desimal, dan konversi ke float tanpa resiko eror"""
     for col in df.columns:
         if col not in exclude_cols:
-            # Mengonversi ke string untuk manipulasi teks aman
             df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
             df[col] = df[col].str.replace(r'[^\d\.\-]', '', regex=True)
-            # Konversi massal ke numerik, ganti error/kosong dengan nilai 0.0
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     return df
 
 @st.cache_data
 def load_t_or_rh_data(filename, is_temp=True):
-    """Membaca dan menstrukturkan ulang data Suhu atau Kelembaban Udara (RH)"""
+    """Membaca data Suhu/Kelembaban ber-header ganda dengan mekanisme auto-padding"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan di folder utama maupun 'data_acsrsn'.")
+        raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
     
     raw_df = pd.read_csv(filepath, header=None)
     suffix = "TEMPERATURE" if is_temp else "RH"
     clean_cols = ['DATE', '0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', f'{suffix} MAX', f'{suffix} MIN']
     
-    # Ambil baris data utama (memotong baris gabungan header asli indeks 0 & 1)
+    # Auto-padding jika kolom kurang dari 12 akibat kesalahan ekspor CSV
+    while raw_df.shape[1] < 12:
+        raw_df[raw_df.shape[1]] = pd.NA
+        
     data_df = raw_df.iloc[2:].copy()
-    # Batasi hanya 12 kolom pertama untuk memotong kolom kosong (Unnamed) otomatis
     data_df = data_df.iloc[:, :12]
     data_df.columns = clean_cols
     
@@ -75,7 +75,7 @@ def load_t_or_rh_data(filename, is_temp=True):
 
 @st.cache_data
 def load_wind_data(filename):
-    """Memisahkan dan membaca file CSV gabungan Kontur Arah & Spektrum Kecepatan Angin"""
+    """Memisahkan dan membaca file CSV gabungan arah dan kecepatan angin secara presisi"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
@@ -83,8 +83,7 @@ def load_wind_data(filename):
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         lines = f.readlines()
         
-    dir_lines = []
-    speed_lines = []
+    dir_lines, speed_lines = [], []
     is_speed_section = False
     
     for line in lines:
@@ -96,18 +95,26 @@ def load_wind_data(filename):
         else:
             speed_lines.append(line)
             
-    # Parsing Tabel Bagian 1: Distribusi Arah Angin
-    dir_header_idx = next((i for i, l in enumerate(dir_lines) if 'DATE' in l and 'CALM' in l), 0)
-    df_dir = pd.read_csv(io.StringIO("".join(dir_lines[dir_header_idx:])))
+    # Parsing Bagian 1: Distribusi Arah Angin
+    dir_header_idx = next((i for i, l in enumerate(dir_lines) if 'DATE' in l and 'CALM' in l), -1)
+    if dir_header_idx != -1:
+        df_dir = pd.read_csv(io.StringIO("".join(dir_lines[dir_header_idx:])))
+    else:
+        df_dir = pd.DataFrame(columns=['DATE', 'CALM'])
+        
     df_dir.columns = [c.strip() for c in df_dir.columns]
     df_dir = df_dir.loc[:, ~df_dir.columns.str.contains('^Unnamed')]
     df_dir['DATE'] = df_dir['DATE'].astype(str).str.strip().str.upper()
     df_dir = df_dir[df_dir['DATE'].isin(MONTHS)]
     df_dir = clean_numeric_dataframe(df_dir)
     
-    # Parsing Tabel Bagian 2: Rentang Kecepatan Angin
-    speed_header_idx = next((i for i, l in enumerate(speed_lines) if 'DATE' in l and 'CALM' in l), 0)
-    df_speed = pd.read_csv(io.StringIO("".join(speed_lines[speed_header_idx:])))
+    # Parsing Bagian 2: Rentang Kecepatan Angin
+    speed_header_idx = next((i for i, l in enumerate(speed_lines) if 'DATE' in l and 'CALM' in l), -1)
+    if speed_header_idx != -1:
+        df_speed = pd.read_csv(io.StringIO("".join(speed_lines[speed_header_idx:])))
+    else:
+        df_speed = pd.DataFrame(columns=['DATE', 'CALM'])
+        
     df_speed.columns = [c.strip() for c in df_speed.columns]
     df_speed = df_speed.loc[:, ~df_speed.columns.str.contains('^Unnamed')]
     df_speed['DATE'] = df_speed['DATE'].astype(str).str.strip().str.upper()
@@ -118,7 +125,7 @@ def load_wind_data(filename):
 
 @st.cache_data
 def load_generic_freq_data(filename):
-    """Membaca data distribusi frekuensi standar (Suhu, Visibility, Hs)"""
+    """Membaca data distribusi frekuensi standar lingkungan (Suhu, Visibility, Hs)"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
@@ -130,7 +137,7 @@ def load_generic_freq_data(filename):
     return clean_numeric_dataframe(df)
 
 # ==============================================================================
-# 3. PIPELINE EKSEKUSI PENYIAPAN DATA GLOBAL
+# 3. EKSEKUSI PEMUATAN DATABASE UTAMA
 # ==============================================================================
 try:
     df_hs = load_generic_freq_data('hs_2021_2025.xlsx - Sheet1.csv')
@@ -141,12 +148,12 @@ try:
     df_wind_dir, df_wind_spd = load_wind_data('wind_2021_2025.xlsx - Sheet1.csv')
     data_load_error = False
 except Exception as e:
-    st.error(f"❌ Gagal memuat pangkalan data meteorologi: {str(e)}")
-    st.info("💡 Solusi: Pastikan seluruh file CSV hasil ekspor berada di folder yang sama dengan skrip ini.")
+    st.error(f"❌ Gagal memuat database cuaca: {str(e)}")
+    st.info("💡 Solusi: Pastikan berkas CSV berada satu lokasi dengan file script app.py ini.")
     data_load_error = True
 
 # ==============================================================================
-# 4. STRUKTUR NAVIGASI UTAMA & ANTARMUKA (UI)
+# 4. KONTROL INTERAKSI & STRUKTUR DASHBOARD
 # ==============================================================================
 if not data_load_error:
     st.sidebar.markdown("### 🧭 Navigasi Menu")
@@ -162,9 +169,8 @@ if not data_load_error:
         ["Semua Bulan (Kompilasi Tahunan)"] + MONTHS
     )
 
-    # Output Header Dinamis
     st.markdown('<div class="main-title">Dashboard Analisis Meteorologi Lokal (Periode 2021-2025)</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="sub-title">Visualisasi data historis | Filter aktif saat ini: <b>{filter_bulan}</b></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sub-title">Visualisasi data historis terpadu | Filter aktif: <b>{filter_bulan}</b></div>', unsafe_allow_html=True)
     st.divider()
 
     # --------------------------------------------------------------------------
@@ -188,8 +194,12 @@ if not data_load_error:
             x_label = "Siklus Bulan Dalam Setahun"
             title_text = "Kurva Tren Fluktuasi Suhu dan RH Makro (Kompilasi 2021-2025)"
         else:
-            sub_t = df_t[df_t['DATE'] == filter_bulan].iloc[0]
-            sub_rh = df_rh[df_rh['DATE'] == filter_bulan].iloc[0]
+            sub_t_df = df_t[df_t['DATE'] == filter_bulan]
+            sub_rh_df = df_rh[df_rh['DATE'] == filter_bulan]
+            
+            # Safe Fallback handling jika data bulan kosong / terhapus sengaja
+            sub_t = sub_t_df.iloc[0] if not sub_t_df.empty else pd.Series(0.0, index=df_t.columns)
+            sub_rh = sub_rh_df.iloc[0] if not sub_rh_df.empty else pd.Series(0.0, index=df_rh.columns)
             
             t_values = [sub_t[h] for h in hours]
             rh_values = [sub_rh[h] for h in hours]
@@ -201,12 +211,11 @@ if not data_load_error:
             x_label = "Jam Pengamatan Udara (Siklus Diurnal)"
             title_text = f"Meteogram Perubahan Diurnal Suhu & RH - Bulan {filter_bulan}"
             
-            # Tampilan Ringkasan Metrik Utama Komponen Cuaca
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Suhu Rata-rata", f"{sub_t['DAILY MEAN']:.1f} °C")
-            c2.metric("Ekstremitas Suhu (Max/Min)", f"{sub_t['TEMPERATURE MAX']:.1f}°C / {sub_t['TEMPERATURE MIN']:.1f}°C")
+            c2.metric("Ekstrem Suhu (Max/Min)", f"{sub_t['TEMPERATURE MAX']:.1f}°C / {sub_t['TEMPERATURE MIN']:.1f}°C")
             c3.metric("RH Rata-rata", f"{sub_rh['DAILY MEAN']:.1f} %")
-            c4.metric("Ekstremitas Kelembaban (Max/Min)", f"{sub_rh['RH MAX']:.1f}% / {sub_rh['RH MIN']:.1f}%")
+            c4.metric("Ekstrem Kelembaban (Max/Min)", f"{sub_rh['RH MAX']:.1f}% / {sub_rh['RH MIN']:.1f}%")
             st.write("")
 
         fig.update_layout(
@@ -234,22 +243,35 @@ if not data_load_error:
     elif menu == "Analisis Karakteristik Angin":
         st.subheader("💨 Profil Sebaran Kontur Arah dan Batas Kecepatan Angin")
         
-        # Ekstrasi dinamis seluruh kolom sektor mata angin (Mencegah eror penulisan manual)
-        dir_sectors = [c for c in df_wind_dir.columns if c not in ['DATE', 'CALM']]
-        # Generate 12 sudut kompas searah jarum jam untuk visualisasi windrose polar
-        angles = [i * 30 for i in range(12)]
+        # Saring sampah kolom secara dinamis
+        dir_sectors = [c for c in df_wind_dir.columns if c not in ['DATE', 'CALM'] and not c.startswith('Unnamed')][:12]
+        angles = [i * 30 for i in range(len(dir_sectors))]
+        sector_labels = ['N (Utara)', 'NNE', 'ENE', 'E (Timur)', 'ESE', 'SSE', 'S (Selatan)', 'SSW', 'WSW', 'W (Barat)', 'WNW', 'NNW']
+        tick_texts = sector_labels[:len(dir_sectors)]
         
+        speed_cols = [c for c in df_wind_spd.columns if c not in ['DATE', 'CALM'] and not c.startswith('Unnamed')]
+
         if filter_bulan == "Semua Bulan (Kompilasi Tahunan)":
-            dir_values = df_wind_dir[dir_sectors].mean().values
-            calm_val = df_wind_dir['CALM'].mean()
-            speed_values = df_wind_spd.drop(columns=['DATE', 'CALM'], errors='ignore').mean()
+            dir_values = df_wind_dir[dir_sectors].mean().values if dir_sectors else [0]*len(angles)
+            calm_val = df_wind_dir['CALM'].mean() if 'CALM' in df_wind_dir.columns else 0.0
+            speed_values = df_wind_spd[speed_cols].mean() if speed_cols else pd.Series()
             rose_title = "Windrose Pola Frekuensi Arah Angin Dominan (Kompilasi Tahunan)"
         else:
-            row_dir = df_wind_dir[df_wind_dir['DATE'] == filter_bulan].iloc[0]
-            dir_values = [row_dir[sec] for sec in dir_sectors]
-            calm_val = row_dir['CALM']
-            row_spd = df_wind_spd[df_wind_spd['DATE'] == filter_bulan].iloc[0]
-            speed_values = row_spd.drop(['DATE', 'CALM'], errors='ignore')
+            row_dir_df = df_wind_dir[df_wind_dir['DATE'] == filter_bulan]
+            if row_dir_df.empty:
+                dir_values = [0] * len(dir_sectors)
+                calm_val = 0.0
+            else:
+                row_dir = row_dir_df.iloc[0]
+                dir_values = [row_dir[sec] for sec in dir_sectors]
+                calm_val = row_dir['CALM'] if 'CALM' in row_dir else 0.0
+                
+            row_spd_df = df_wind_spd[df_wind_spd['DATE'] == filter_bulan]
+            if row_spd_df.empty:
+                speed_values = pd.Series(0.0, index=speed_cols)
+            else:
+                speed_values = row_spd_df.iloc[0][speed_cols]
+                
             rose_title = f"Windrose Pola Arah Angin Dominan - Bulan {filter_bulan}"
 
         col1, col2 = st.columns([1, 1])
@@ -271,9 +293,10 @@ if not data_load_error:
                     angularaxis=dict(
                         tickmode="array",
                         tickvals=angles,
-                        ticktext=['N (Utara)', 'NNE', 'ENE', 'E (Timur)', 'ESE', 'SSE', 'S (Selatan)', 'SSW', 'WSW', 'W (Barat)', 'WNW', 'NNW'],
+                        ticktext=tick_texts,
                         direction="clockwise",
-                        period=360
+                        period=360,
+                        rotation=90  # Menempatkan arah Utara tepat di bagian paling ATAS
                     )
                 ),
                 height=480
@@ -286,8 +309,10 @@ if not data_load_error:
             fig_spd.add_trace(go.Bar(
                 x=list(speed_values.index),
                 y=list(speed_values.values),
-                marker_color="#3B82F6",
-                marker=dict(line=dict(color='#111827', width=1))  # SINTAKS BEBAS EROR PLOTLY MASA DEPAN
+                marker=dict(
+                    color="#3B82F6",
+                    line=dict(color='#111827', width=1)
+                )
             ))
             fig_spd.update_layout(
                 title=f"Distribusi Kluster Tingkat Kecepatan Angin ({filter_bulan})",
@@ -313,10 +338,9 @@ if not data_load_error:
     elif menu == "Analisis Kluster Frekuensi Lingkungan":
         st.subheader("📊 Analisis Distribusi Kluster Probabilitas Elemen Atmosfer")
         
-        sub_menu = st.radio(
+        sub_menu = st.sidebar.radio(
             "Pilih Parameter Distribusi:", 
-            ["Frekuensi Nilai Suhu Udara", "Frekuensi Jarak Pandang (Visibility)", "Frekuensi Batas Ketinggian Awan (Hs/Ceiling)"], 
-            orientation="horizontal"
+            ["Frekuensi Nilai Suhu Udara", "Frekuensi Jarak Pandang (Visibility)", "Frekuensi Batas Ketinggian Awan (Hs/Ceiling)"]
         )
         
         if sub_menu == "Frekuensi Nilai Suhu Udara":
@@ -335,21 +359,29 @@ if not data_load_error:
             x_title_bar = "Kategori Batas Ketinggian Kritis (Feet)"
             color_bar = "#059669"
 
+        cols_to_plot = [c for c in active_df.columns if c != 'DATE']
+
         if filter_bulan == "Semua Bulan (Kompilasi Tahunan)":
-            plot_series = active_df.drop(columns=['DATE']).mean()
+            plot_series = active_df[cols_to_plot].mean() if cols_to_plot else pd.Series()
             g_title_final = f"{title_g} - Gabungan Kompilasi Tahunan"
         else:
-            plot_series = active_df[active_df['DATE'] == filter_bulan].drop(columns=['DATE']).iloc[0]
+            sub_df = active_df[active_df['DATE'] == filter_bulan]
+            if sub_df.empty:
+                plot_series = pd.Series(0.0, index=cols_to_plot)
+            else:
+                plot_series = sub_df[cols_to_plot].iloc[0]
             g_title_final = f"{title_g} - Bulan {filter_bulan}"
 
         fig_freq = go.Figure()
         fig_freq.add_trace(go.Bar(
             x=list(plot_series.index),
             y=list(plot_series.values),
-            marker_color=color_bar,
             text=[f"{v:.2f}%" for v in plot_series.values],
             textposition='auto',
-            marker=dict(line=dict(color='#111827', width=1))
+            marker=dict(
+                color=color_bar,
+                line=dict(color='#111827', width=1)
+            )
         ))
         
         fig_freq.update_layout(
