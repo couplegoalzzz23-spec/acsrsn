@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import io
 import os
+import csv
 
 # ==============================================================================
 # 1. KONFIGURASI HALAMAN & ANTARMUKA (UI) UTAMA
@@ -28,7 +29,7 @@ MONTHS = [
 ]
 
 # ==============================================================================
-# 2. DATA PIPELINE ENGINE (AMAN & AMBISI KUALITAS TINGGI)
+# 2. DATA PIPELINE ENGINE (SUPER ROBUST & ANTI-CRASH)
 # ==============================================================================
 
 def find_file(filename):
@@ -41,7 +42,7 @@ def find_file(filename):
     return filename
 
 def clean_numeric_dataframe(df, exclude_cols=['DATE']):
-    """Membersihkan whitespace, menormalisasi desimal, dan konversi ke float tanpa resiko eror"""
+    """Membersihkan desimal koma, string sampah, dan mengubah ke float secara aman"""
     for col in df.columns:
         if col not in exclude_cols:
             df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
@@ -49,33 +50,73 @@ def clean_numeric_dataframe(df, exclude_cols=['DATE']):
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     return df
 
+def parse_csv_lines_robustly(lines_list):
+    """Membaca baris CSV secara manual untuk menghindari ParserError akibat kolom tidak rata"""
+    reader = csv.reader(lines_list)
+    rows = list(reader)
+    if not rows:
+        return pd.DataFrame()
+    
+    header_row = None
+    header_idx = -1
+    for idx, r in enumerate(rows):
+        if r and 'DATE' in [str(c).upper().strip() for c in r]:
+            header_row = [str(c).strip().upper() for c in r]
+            header_idx = idx
+            break
+            
+    if header_row is None:
+        return pd.DataFrame()
+        
+    valid_rows = rows[header_idx:]
+    header_len = len(header_row)
+    
+    standardized_rows = []
+    for r in valid_rows:
+        if not r or all(c.strip() == '' for c in r):
+            continue
+        if len(r) >= header_len:
+            standardized_rows.append([str(c).strip() for c in r[:header_len]])
+        else:
+            standardized_rows.append([str(c).strip() for c in r] + [''] * (header_len - len(r)))
+            
+    if len(standardized_rows) <= 1:
+        return pd.DataFrame(columns=header_row)
+        
+    df = pd.DataFrame(standardized_rows[1:], columns=standardized_rows[0])
+    return df
+
 @st.cache_data
 def load_t_or_rh_data(filename, is_temp=True):
-    """Membaca data Suhu/Kelembaban ber-header ganda dengan mekanisme auto-padding"""
+    """Membaca data Suhu/RH berbasis pencarian nama bulan langsung (Abaikan double-header rusak)"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
-    
-    raw_df = pd.read_csv(filepath, header=None)
+        
+    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+        
     suffix = "TEMPERATURE" if is_temp else "RH"
     clean_cols = ['DATE', '0', '3', '6', '9', '12', '15', '18', '21', 'DAILY MEAN', f'{suffix} MAX', f'{suffix} MIN']
     
-    # Auto-padding jika kolom kurang dari 12 akibat kesalahan ekspor CSV
-    while raw_df.shape[1] < 12:
-        raw_df[raw_df.shape[1]] = pd.NA
+    data_rows = []
+    for r in rows:
+        if r and str(r[0]).strip().upper() in MONTHS:
+            padded = [str(x).strip() for x in r]
+            if len(padded) < 12:
+                padded += ['0.0'] * (12 - len(padded))
+            data_rows.append(padded[:12])
+            
+    if not data_rows:
+        return pd.DataFrame(columns=clean_cols)
         
-    data_df = raw_df.iloc[2:].copy()
-    data_df = data_df.iloc[:, :12]
-    data_df.columns = clean_cols
-    
-    data_df['DATE'] = data_df['DATE'].astype(str).str.strip().str.upper()
-    data_df = data_df[data_df['DATE'].isin(MONTHS)]
-    
-    return clean_numeric_dataframe(data_df)
+    df = pd.DataFrame(data_rows, columns=clean_cols)
+    return clean_numeric_dataframe(df)
 
 @st.cache_data
 def load_wind_data(filename):
-    """Memisahkan dan membaca file CSV gabungan arah dan kecepatan angin secara presisi"""
+    """Memisahkan tabel gabungan Arah Angin & Kecepatan Angin secara pintar tanpa crash"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
@@ -87,7 +128,7 @@ def load_wind_data(filename):
     is_speed_section = False
     
     for line in lines:
-        if "kecepatan angin bulanan" in line.lower():
+        if "kecepatan angin bulanan" in line.lower() or "kecepatan angin" in line.lower():
             is_speed_section = True
             continue
         if not is_speed_section:
@@ -95,49 +136,50 @@ def load_wind_data(filename):
         else:
             speed_lines.append(line)
             
-    # Parsing Bagian 1: Distribusi Arah Angin
-    dir_header_idx = next((i for i, l in enumerate(dir_lines) if 'DATE' in l and 'CALM' in l), -1)
-    if dir_header_idx != -1:
-        df_dir = pd.read_csv(io.StringIO("".join(dir_lines[dir_header_idx:])))
+    df_dir = parse_csv_lines_robustly(dir_lines)
+    df_speed = parse_csv_lines_robustly(speed_lines)
+    
+    if not df_dir.empty:
+        df_dir.columns = [c.strip().upper() for c in df_dir.columns]
+        df_dir = df_dir.loc[:, ~df_dir.columns.str.contains('^UNNAMED|^$')]
+        df_dir['DATE'] = df_dir['DATE'].astype(str).str.strip().str.upper()
+        df_dir = df_dir[df_dir['DATE'].isin(MONTHS)]
+        df_dir = clean_numeric_dataframe(df_dir)
     else:
         df_dir = pd.DataFrame(columns=['DATE', 'CALM'])
         
-    df_dir.columns = [c.strip() for c in df_dir.columns]
-    df_dir = df_dir.loc[:, ~df_dir.columns.str.contains('^Unnamed')]
-    df_dir['DATE'] = df_dir['DATE'].astype(str).str.strip().str.upper()
-    df_dir = df_dir[df_dir['DATE'].isin(MONTHS)]
-    df_dir = clean_numeric_dataframe(df_dir)
-    
-    # Parsing Bagian 2: Rentang Kecepatan Angin
-    speed_header_idx = next((i for i, l in enumerate(speed_lines) if 'DATE' in l and 'CALM' in l), -1)
-    if speed_header_idx != -1:
-        df_speed = pd.read_csv(io.StringIO("".join(speed_lines[speed_header_idx:])))
+    if not df_speed.empty:
+        df_speed.columns = [c.strip().upper() for c in df_speed.columns]
+        df_speed = df_speed.loc[:, ~df_speed.columns.str.contains('^UNNAMED|^$')]
+        df_speed['DATE'] = df_speed['DATE'].astype(str).str.strip().str.upper()
+        df_speed = df_speed[df_speed['DATE'].isin(MONTHS)]
+        df_speed = clean_numeric_dataframe(df_speed)
     else:
         df_speed = pd.DataFrame(columns=['DATE', 'CALM'])
         
-    df_speed.columns = [c.strip() for c in df_speed.columns]
-    df_speed = df_speed.loc[:, ~df_speed.columns.str.contains('^Unnamed')]
-    df_speed['DATE'] = df_speed['DATE'].astype(str).str.strip().str.upper()
-    df_speed = df_speed[df_speed['DATE'].isin(MONTHS)]
-    df_speed = clean_numeric_dataframe(df_speed)
-    
     return df_dir, df_speed
 
 @st.cache_data
 def load_generic_freq_data(filename):
-    """Membaca data distribusi frekuensi standar lingkungan (Suhu, Visibility, Hs)"""
+    """Membaca data distribusi frekuensi lingkungan secara bersih dan dinamis"""
     filepath = find_file(filename)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Berkas '{filename}' tidak ditemukan.")
-    df = pd.read_csv(filepath)
-    df.columns = [c.strip() for c in df.columns]
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    df['DATE'] = df['DATE'].astype(str).str.strip().str.upper()
-    df = df[df['DATE'].isin(MONTHS)]
-    return clean_numeric_dataframe(df)
+        
+    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+        
+    df = parse_csv_lines_robustly(lines)
+    if not df.empty:
+        df.columns = [c.strip().upper() for c in df.columns]
+        df = df.loc[:, ~df.columns.str.contains('^UNNAMED|^$')]
+        df['DATE'] = df['DATE'].astype(str).str.strip().str.upper()
+        df = df[df['DATE'].isin(MONTHS)]
+        df = clean_numeric_dataframe(df)
+    return df
 
 # ==============================================================================
-# 3. EKSEKUSI PEMUATAN DATABASE UTAMA
+# 3. PROSES LOADING DATABASE (AMAN & TERKONTROL)
 # ==============================================================================
 try:
     df_hs = load_generic_freq_data('hs_2021_2025.xlsx - Sheet1.csv')
@@ -149,11 +191,11 @@ try:
     data_load_error = False
 except Exception as e:
     st.error(f"❌ Gagal memuat database cuaca: {str(e)}")
-    st.info("💡 Solusi: Pastikan berkas CSV berada satu lokasi dengan file script app.py ini.")
+    st.info("💡 Solusi: Pastikan nama berkas CSV Anda sudah tepat dan diletakkan satu folder dengan berkas script ini.")
     data_load_error = True
 
 # ==============================================================================
-# 4. KONTROL INTERAKSI & STRUKTUR DASHBOARD
+# 4. KONTROL INTERAKSI & STRUKTUR DASHBOARD VIA SIDEBAR
 # ==============================================================================
 if not data_load_error:
     st.sidebar.markdown("### 🧭 Navigasi Menu")
@@ -197,12 +239,11 @@ if not data_load_error:
             sub_t_df = df_t[df_t['DATE'] == filter_bulan]
             sub_rh_df = df_rh[df_rh['DATE'] == filter_bulan]
             
-            # Safe Fallback handling jika data bulan kosong / terhapus sengaja
             sub_t = sub_t_df.iloc[0] if not sub_t_df.empty else pd.Series(0.0, index=df_t.columns)
             sub_rh = sub_rh_df.iloc[0] if not sub_rh_df.empty else pd.Series(0.0, index=df_rh.columns)
             
-            t_values = [sub_t[h] for h in hours]
-            rh_values = [sub_rh[h] for h in hours]
+            t_values = [float(sub_t[h]) if h in sub_t else 0.0 for h in hours]
+            rh_values = [float(sub_rh[h]) if h in sub_rh else 0.0 for h in hours]
             time_labels = [f"{h.zfill(2)}:00 UTC" for h in hours]
             
             fig.add_trace(go.Scatter(x=time_labels, y=t_values, name='Suhu Diurnal (°C)', mode='lines+markers', line=dict(color='#DC2626', width=3)))
@@ -212,10 +253,17 @@ if not data_load_error:
             title_text = f"Meteogram Perubahan Diurnal Suhu & RH - Bulan {filter_bulan}"
             
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Suhu Rata-rata", f"{sub_t['DAILY MEAN']:.1f} °C")
-            c2.metric("Ekstrem Suhu (Max/Min)", f"{sub_t['TEMPERATURE MAX']:.1f}°C / {sub_t['TEMPERATURE MIN']:.1f}°C")
-            c3.metric("RH Rata-rata", f"{sub_rh['DAILY MEAN']:.1f} %")
-            c4.metric("Ekstrem Kelembaban (Max/Min)", f"{sub_rh['RH MAX']:.1f}% / {sub_rh['RH MIN']:.1f}%")
+            val_t_mean = sub_t['DAILY MEAN'] if not sub_t_df.empty else 0.0
+            val_t_max = sub_t['TEMPERATURE MAX'] if not sub_t_df.empty else 0.0
+            val_t_min = sub_t['TEMPERATURE MIN'] if not sub_t_df.empty else 0.0
+            val_rh_mean = sub_rh['DAILY MEAN'] if not sub_rh_df.empty else 0.0
+            val_rh_max = sub_rh['RH MAX'] if not sub_rh_df.empty else 0.0
+            val_rh_min = sub_rh['RH MIN'] if not sub_rh_df.empty else 0.0
+
+            c1.metric("Suhu Rata-rata", f"{val_t_mean:.1f} °C")
+            c2.metric("Ekstrem Suhu (Max/Min)", f"{val_t_max:.1f}°C / {val_t_min:.1f}°C")
+            c3.metric("RH Rata-rata", f"{val_rh_mean:.1f} %")
+            c4.metric("Ekstrem Kelembaban (Max/Min)", f"{val_rh_max:.1f}% / {val_rh_min:.1f}%")
             st.write("")
 
         fig.update_layout(
@@ -243,34 +291,36 @@ if not data_load_error:
     elif menu == "Analisis Karakteristik Angin":
         st.subheader("💨 Profil Sebaran Kontur Arah dan Batas Kecepatan Angin")
         
-        # Saring sampah kolom secara dinamis
-        dir_sectors = [c for c in df_wind_dir.columns if c not in ['DATE', 'CALM'] and not c.startswith('Unnamed')][:12]
-        angles = [i * 30 for i in range(len(dir_sectors))]
+        dir_sectors = [c for c in df_wind_dir.columns if c not in ['DATE', 'CALM'] and not c.startswith('UNNAMED')]
+        dir_sectors = [s for s in dir_sectors if s.strip() != ''][:12]
+        
+        angles = [i * (360 / len(dir_sectors)) if len(dir_sectors) > 0 else 0 for i in range(len(dir_sectors))]
         sector_labels = ['N (Utara)', 'NNE', 'ENE', 'E (Timur)', 'ESE', 'SSE', 'S (Selatan)', 'SSW', 'WSW', 'W (Barat)', 'WNW', 'NNW']
         tick_texts = sector_labels[:len(dir_sectors)]
         
-        speed_cols = [c for c in df_wind_spd.columns if c not in ['DATE', 'CALM'] and not c.startswith('Unnamed')]
+        speed_cols = [c for c in df_wind_spd.columns if c not in ['DATE', 'CALM'] and not c.startswith('UNNAMED')]
+        speed_cols = [s for s in speed_cols if s.strip() != '']
 
         if filter_bulan == "Semua Bulan (Kompilasi Tahunan)":
-            dir_values = df_wind_dir[dir_sectors].mean().values if dir_sectors else [0]*len(angles)
+            dir_values = df_wind_dir[dir_sectors].mean().values if (not df_wind_dir.empty and dir_sectors) else [0.0]*len(angles)
             calm_val = df_wind_dir['CALM'].mean() if 'CALM' in df_wind_dir.columns else 0.0
-            speed_values = df_wind_spd[speed_cols].mean() if speed_cols else pd.Series()
+            speed_values = df_wind_spd[speed_cols].mean() if (not df_wind_spd.empty and speed_cols) else pd.Series(0.0, index=['No Data'])
             rose_title = "Windrose Pola Frekuensi Arah Angin Dominan (Kompilasi Tahunan)"
         else:
             row_dir_df = df_wind_dir[df_wind_dir['DATE'] == filter_bulan]
-            if row_dir_df.empty:
-                dir_values = [0] * len(dir_sectors)
+            if row_dir_df.empty or not dir_sectors:
+                dir_values = [0.0] * len(angles)
                 calm_val = 0.0
             else:
                 row_dir = row_dir_df.iloc[0]
-                dir_values = [row_dir[sec] for sec in dir_sectors]
-                calm_val = row_dir['CALM'] if 'CALM' in row_dir else 0.0
+                dir_values = [float(row_dir[sec]) for sec in dir_sectors]
+                calm_val = float(row_dir['CALM']) if 'CALM' in row_dir else 0.0
                 
             row_spd_df = df_wind_spd[df_wind_spd['DATE'] == filter_bulan]
-            if row_spd_df.empty:
-                speed_values = pd.Series(0.0, index=speed_cols)
+            if row_spd_df.empty or not speed_cols:
+                speed_values = pd.Series(0.0, index=speed_cols if speed_cols else ['No Data'])
             else:
-                speed_values = row_spd_df.iloc[0][speed_cols]
+                speed_values = row_spd_df.iloc[0][speed_cols].astype(float)
                 
             rose_title = f"Windrose Pola Arah Angin Dominan - Bulan {filter_bulan}"
 
@@ -296,13 +346,13 @@ if not data_load_error:
                         ticktext=tick_texts,
                         direction="clockwise",
                         period=360,
-                        rotation=90  # Menempatkan arah Utara tepat di bagian paling ATAS
+                        rotation=90  # Memastikan arah Utara (N) berada tepat di bagian ATAS grafik
                     )
                 ),
                 height=480
             )
             st.plotly_chart(fig_rose, use_container_width=True)
-            st.info(f"ℹ️ **Udara Tenang (CALM):** Probabilitas kondisi atmosfer tenang / tanpa angin berkisar di rata-rata **{calm_val:.2f}%**")
+            st.info(f"ℹ️ **Udara Tenang (CALM):** Probabilitas kondisi atmosfer tanpa angin berkisar di rata-rata **{calm_val:.2f}%**")
 
         with col2:
             fig_spd = go.Figure()
@@ -369,14 +419,14 @@ if not data_load_error:
             if sub_df.empty:
                 plot_series = pd.Series(0.0, index=cols_to_plot)
             else:
-                plot_series = sub_df[cols_to_plot].iloc[0]
+                plot_series = sub_df[cols_to_plot].iloc[0].astype(float)
             g_title_final = f"{title_g} - Bulan {filter_bulan}"
 
         fig_freq = go.Figure()
         fig_freq.add_trace(go.Bar(
             x=list(plot_series.index),
             y=list(plot_series.values),
-            text=[f"{v:.2f}%" for v in plot_series.values],
+            text=[f"{float(v):.2f}%" for v in plot_series.values] if not plot_series.empty else [],
             textposition='auto',
             marker=dict(
                 color=color_bar,
