@@ -1,60 +1,65 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
 st.set_page_config(page_title="Dashboard Meteo", layout="wide")
 
-@st.cache_data
+# Fungsi untuk memuat data
 def load_data(bulan):
     filename = f"HS_2021-2025.xlsx - {bulan}.csv"
-    if not os.path.exists(filename):
-        return None
     
-    # Membaca dengan skip baris deskripsi dan memastikan header di baris ke-4 (indeks 4)
+    if not os.path.exists(filename):
+        st.error(f"File {filename} tidak ditemukan di folder!")
+        return None
+
+    # header=4 karena data kolom dimulai dari baris ke-5 (indeks 4)
     df = pd.read_csv(filename, header=4)
     
-    # 1. Pembersihan Nama Kolom: Menghapus spasi ekstra atau karakter tak terlihat
+    # 1. Bersihkan nama kolom agar tidak ada spasi yang tidak terlihat
     df.columns = df.columns.str.strip()
     
-    # 2. Rename kolom agar konsisten
-    # Berdasarkan data: (GMT), Unnamed: 1 (ini adalah YEAR), < 150, dst
-    df = df.rename(columns={'(GMT)': 'TIME', 'Unnamed: 1': 'YEAR'})
+    # 2. Rename kolom agar mudah dipanggil (sesuaikan dengan struktur CSV Anda)
+    # File Anda memiliki struktur: (GMT), Unnamed: 1 (YEAR), < 150, dst
+    df = df.rename(columns={
+        '(GMT)': 'TIME', 
+        'Unnamed: 1': 'YEAR',
+        '< 150': 'C_150', '< 200': 'C_200', '< 300': 'C_300', 
+        '< 500': 'C_500', '< 1000': 'C_1000', '< 1500': 'C_1500'
+    })
     
-    # 3. Filter hanya kolom yang relevan
-    cols_to_keep = ['TIME', 'YEAR', '< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
-    df = df[cols_to_keep]
+    # 3. Ambil kolom yang relevan saja
+    cols = ['TIME', 'YEAR', 'C_150', 'C_200', 'C_300', 'C_500', 'C_1000', 'C_1500']
+    df = df[cols]
     
-    # 4. Konversi tipe data
+    # 4. Paksa konversi ke angka (untuk menghindari error data kotor)
     df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+    
     return df
 
-# Sidebar & Logic
+# UI Streamlit
+st.title("Dashboard Meteorologi")
+
 bulan_list = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", 
               "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
-bulan_terpilih = st.sidebar.selectbox("Pilih Bulan", bulan_list)
 
-df = load_data(bulan_terpilih)
+bulan_pilihan = st.sidebar.selectbox("Pilih Bulan", bulan_list)
+
+df = load_data(bulan_pilihan)
 
 if df is not None:
-    st.title(f"Dashboard Meteorologi: {bulan_terpilih}")
+    st.write(f"Menampilkan data untuk: {bulan_pilihan}")
     
-    # Filter Tahun
+    # Pilihan filter tahun
     tahun_tersedia = sorted(df['YEAR'].unique().astype(int))
-    tahun_terpilih = st.sidebar.multiselect("Pilih Tahun", tahun_tersedia, default=tahun_tersedia)
+    tahun_pilihan = st.sidebar.multiselect("Pilih Tahun", tahun_tersedia, default=tahun_tersedia)
     
-    df_filtered = df[df['YEAR'].isin(tahun_terpilih)].groupby('TIME').mean().reset_index()
+    # Filter data
+    df_plot = df[df['YEAR'].isin(tahun_pilihan)]
     
-    # Meteogram
-    fig = go.Figure()
-    for col in ['< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']:
-        fig.add_trace(go.Scatter(x=df_filtered['TIME'], y=df_filtered[col], name=col))
-    
+    # Grafik
+    fig = px.line(df_plot, x='TIME', y=['C_150', 'C_200', 'C_300', 'C_500', 'C_1000', 'C_1500'], 
+                  color='YEAR', title=f"Frekunesi Cloud Base ({bulan_pilihan})")
     st.plotly_chart(fig, use_container_width=True)
     
-    # Heatmap
-    heatmap_data = df_filtered.set_index('TIME').drop(columns=['YEAR']).T
-    st.plotly_chart(px.imshow(heatmap_data, color_continuous_scale='Viridis'), use_container_width=True)
-else:
-    st.error("File tidak ditemukan atau format tidak sesuai.")
+    st.dataframe(df)
