@@ -1,251 +1,139 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import logging
+import os
 
-# Setup Logging untuk mendeteksi error di Streamlit Cloud
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Konfigurasi Halaman Streamlit
+# Konfigurasi Halaman Utama
 st.set_page_config(
-    page_title="Dashboard Meteorologi | Analisis Cloud Base",
-    page_icon="⛅",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Analisis Ketinggian Dasar Awan (HS)",
+    page_icon="✈️",
+    layout="wide"
 )
 
-# Custom CSS untuk tampilan KPI/Metrik yang rapi
-st.markdown("""
-    <style>
-    .metric-card {
-        background-color: #262730;
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-    }
-    .st-emotion-cache-1wivap2 {
-        padding-top: 2rem;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# Judul Utama Aplikasi
+st.title("📊 Dasbor Analisis Ketinggian Dasar Awan (2021-2025)")
+st.write("Sistem ini membaca data frekuensi ketinggian pangkalan awan terendah langsung dari framework repositori.")
 
-@st.cache_data(show_spinner=False)
-def load_and_validate_data(uploaded_files):
-    all_data = []
-    
-    for uploaded_file in uploaded_files:
-        try:
-            # Identifikasi format (mendukung file Excel multi-sheet dan kumpulan CSV)
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file, header=None)
-                sheet_dict = {uploaded_file.name.replace('.csv', ''): df}
-            elif uploaded_file.name.endswith(('.xls', '.xlsx')):
-                sheet_dict = pd.read_excel(uploaded_file, sheet_name=None, header=None)
-            else:
-                st.warning(f"Format file {uploaded_file.name} tidak didukung.")
-                continue
-            
-            # Iterasi untuk tiap bulan/sheet
-            for sheet_name, df in sheet_dict.items():
-                # Pencarian baris dinamis: Cari baris mana saja yang mengandung teks 'TIME'
-                header_row_mask = df.apply(lambda r: r.astype(str).str.contains('TIME', case=False, na=False).any(), axis=1)
-                
-                if not header_row_mask.any():
-                    logging.warning(f"Kolom TIME tidak ditemukan di sheet {sheet_name}")
-                    continue
-                    
-                idx = header_row_mask.idxmax()
-                col_part1 = df.iloc[idx].fillna("").astype(str)
-                col_part2 = df.iloc[idx+1].fillna("").astype(str)
-                
-                cols = []
-                # Penggabungan header multi-level menjadi header tunggal yang bersih
-                for c1, c2 in zip(col_part1, col_part2):
-                    c1_str = str(c1).strip()
-                    c2_str = str(c2).strip()
-                    
-                    if "TIME" in c1_str:
-                        cols.append("TIME")
-                    elif "YEAR" in c1_str:
-                        cols.append("YEAR")
-                    elif "<" in c2_str or ">" in c2_str:
-                        cols.append(c2_str)
-                    else:
-                        cols.append(c2_str if c2_str and c2_str.lower() != 'nan' else c1_str)
-                
-                # Ekstrak data murni (di bawah baris header)
-                data = df.iloc[idx+2:].copy()
-                data.columns = [c.strip() for c in cols]
-                
-                # Buang kolom yang tidak terpakai/kosong
-                data = data.loc[:, [bool(c) for c in data.columns]]
-                
-                if "TIME" not in data.columns or "YEAR" not in data.columns:
-                    logging.error(f"Struktur kolom utama (TIME/YEAR) tidak lengkap di {sheet_name}")
-                    continue
-                
-                data["Bulan_Sumber"] = sheet_name
-                
-                # Konversi menjadi format numerik
-                for col in data.columns:
-                    if col != "Bulan_Sumber":
-                        data[col] = pd.to_numeric(data[col], errors='coerce')
-                
-                data = data.dropna(subset=['TIME', 'YEAR'])
-                all_data.append(data)
-                
-        except Exception as e:
-            logging.error(f"Error pembacaan pada file {uploaded_file.name}: {e}")
-            st.error(f"Gagal memproses file {uploaded_file.name}: {e}")
-            
-    if all_data:
-        final_df = pd.concat(all_data, ignore_index=True)
-        return final_df
-    return pd.DataFrame()
+# Daftar bulan sesuai dengan format penamaan file repositori
+BULAN_LIST = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+]
 
-def main():
-    st.title("⛅ Dashboard Meteorologi Profesional")
-    st.markdown("### Analisis Profil Ketinggian Dasar Awan (Cloud Base Height)")
-    
-    # --- KONFIGURASI SIDEBAR ---
-    with st.sidebar:
-        st.header("⚙️ Data Input")
-        uploaded_files = st.file_uploader(
-            "Unggah Data Pengamatan", 
-            type=['xlsx', 'xls', 'csv'], 
-            accept_multiple_files=True,
-            help="Unggah file utama (contoh: HS_2021-2025.xlsx) yang memuat sheet dari Januari hingga Desember."
-        )
-        st.markdown("---")
-        st.info("💡 **Tips Deployment Cloud:** Aplikasi ini kompatibel dengan Streamlit Community Cloud.")
-    
-    # --- HALAMAN UTAMA ---
-    if uploaded_files:
-        with st.spinner('Memvalidasi dan mengolah struktur data...'):
-            df = load_and_validate_data(uploaded_files)
-            
-        if df.empty:
-            st.error("❌ Data tidak valid. Pastikan template format pengamatan (terutama baris 'TIME') sesuai.")
-            st.stop()
-            
-        st.success(f"✅ Sistem berhasil mendeteksi dan membersihkan **{len(df)}** baris data harian!")
-        
-        # Ekstraksi otomatis rentang base awan (contoh: < 150, < 200)
-        threshold_cols = [c for c in df.columns if '<' in c or '>' in c]
-        
-        # --- FILTER DATA BERDASARKAN TAHUN ---
-        st.sidebar.subheader("🔍 Filter Analisis")
-        available_years = sorted(df['YEAR'].dropna().unique().astype(int).tolist())
-        selected_years = st.sidebar.multiselect(
-            "Pilih Rentang Tahun", 
-            options=available_years, 
-            default=available_years
-        )
-        
-        if not selected_years:
-            st.warning("⚠️ Mohon centang setidaknya satu tahun pada panel filter (sebelah kiri).")
-            st.stop()
-            
-        filtered_df = df[df['YEAR'].isin(selected_years)]
-        
-        # --- PERHITUNGAN MEAN KLIMATOLOGI DIURNAL ---
-        st.markdown("---")
-        st.header("📊 Statistik Klimatologi Diurnal")
-        st.markdown(f"Menampilkan agregasi (rata-rata persentase) dasar awan untuk periode tahun **{min(selected_years)} hingga {max(selected_years)}**.")
-        
-        mean_df = filtered_df.groupby('TIME')[threshold_cols].mean().reset_index()
-        
-        # --- KOTAK METRIK UTAMA ---
-        st.subheader("📈 Rekapitulasi Global (Periode Filter)")
-        col1, col2, col3 = st.columns(3)
-        max_val = mean_df[threshold_cols].max().max()
-        min_val = mean_df[threshold_cols].min().min()
-        avg_val = mean_df[threshold_cols].mean().mean()
-        
-        col1.metric("Frekuensi Maksimum (%)", f"{max_val:.2f}%")
-        col2.metric("Frekuensi Minimum (%)", f"{min_val:.2f}%")
-        col3.metric("Rata-rata Global (%)", f"{avg_val:.2f}%")
+# Sidebar Navigasi & Kontrol Parameter
+st.sidebar.header("⚙️ Parameter Navigasi")
+bulan_terpilih = st.sidebar.selectbox("Pilih Bulan Analisis:", BULAN_LIST)
 
-        # --- GRAFIK MULTI-LINE METEOGRAM ---
-        st.markdown("---")
-        st.subheader("📉 Meteogram Multi-Line: Siklus Frekuensi Dasar Awan")
+# Penentuan jalur file otomatis (Mendukung file di root directory atau di dalam folder 'data')
+nama_file = f"HS_2021-2025.xlsx - {bulan_terpilih}.csv"
+path_file = nama_file
+
+if not os.path.exists(path_file):
+    # Jalur alternatif jika file dimasukkan ke dalam folder data
+    path_file = os.path.join("data", nama_file)
+
+@st.cache_data
+def muat_data_otomatis(file_path):
+    """
+    Fungsi untuk memuat dan membersihkan data secara otomatis.
+    Menggunakan caching untuk performa cepat dan efisien.
+    """
+    if not os.path.exists(file_path):
+        return None
+    try:
+        # Definisi kolom secara manual agar struktur data tetap konsisten dan tahan banting
+        kolom_kustom = ['TIME (GMT)', 'YEAR', 'HS', '< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
         
-        fig_line = go.Figure()
-        for col in threshold_cols:
-            fig_line.add_trace(go.Scatter(
-                x=mean_df['TIME'], 
-                y=mean_df[col], 
-                mode='lines+markers',
-                name=f'Base {col} ft',
-                hovertemplate='Jam (GMT): %{x}<br>Frekuensi: %{y:.2f}%<extra></extra>'
-            ))
+        # Melewati 5 baris pertama yang berisi informasi judul non-tabel di file CSV
+        df = pd.read_csv(file_path, skiprows=5, names=kolom_kustom, header=None)
+        
+        # Konversi tipe data utama ke numerik dan bersihkan baris kosong
+        df['TIME (GMT)'] = pd.to_numeric(df['TIME (GMT)'], errors='coerce')
+        df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
+        df = df.dropna(subset=['TIME (GMT)', 'YEAR'])
+        
+        # Mengubah indeks kolom waktu & tahun menjadi integer
+        df['TIME (GMT)'] = df['TIME (GMT)'].astype(int)
+        df['YEAR'] = df['YEAR'].astype(int)
+        
+        # Memastikan seluruh nilai frekuensi dikonversi ke float secara aman
+        kolom_frekuensi = ['< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
+        for col in kolom_frekuensi:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-        fig_line.update_layout(
-            xaxis_title="Waktu Pengamatan (Jam - GMT)",
-            yaxis_title="Frekuensi Kemunculan (%)",
-            xaxis=dict(tickmode='linear', tick0=0, dtick=1),
-            hovermode="x unified",
-            legend_title="Batas Ketinggian",
-            margin=dict(l=20, r=20, t=30, b=20)
+        return df
+    except Exception as eks:
+        st.error(f"Gagal memproses struktur data internal: {eks}")
+        return None
+
+# Proses Pemeriksaan dan Validasi File Data
+if os.path.exists(path_file):
+    data_aktif = muat_data_otomatis(path_file)
+    
+    if data_aktif is not None and not data_aktif.empty:
+        # Pilihan Filter Multi-Tahun di Sidebar
+        tahun_tersedia = sorted(data_aktif['YEAR'].unique())
+        tahun_terpilih = st.sidebar.multiselect("Saring Berdasarkan Tahun:", options=tahun_tersedia, default=tahun_tersedia)
+        
+        # Penyaringan data berdasarkan input pengguna
+        df_terfilter = data_aktif[data_aktif['YEAR'].isin(tahun_terpilih)]
+        
+        # Tampilan Utama Grafik Analisis
+        st.subheader(f"📈 Tren Distribusi Frekuensi Ketinggian Dasar Awan — {bulan_terpilih}")
+        
+        mode_grafik = st.radio(
+            "Pilih Mode Analisis Grafik:", 
+            ["Rata-rata Distribusi per Jam (GMT)", "Analisis Spesifik Per Tahun"], 
+            horizontal=True
         )
         
-        # theme="streamlit" memastikan grafik menyesuaikan (Dark Mode / Light Mode) dari user preference
-        st.plotly_chart(fig_line, theme="streamlit", use_container_width=True)
+        kolom_kategori_awan = ['< 150', '< 200', '< 300', '< 500', '< 1000', '< 1500']
         
-        # --- HEATMAP DISTRIBUSI DIURNAL ---
-        st.markdown("---")
-        st.subheader("🔥 Heatmap Diurnal Distribusi Ketinggian Awan")
-        
-        # Pivot (Tidy Format) agar kompatibel dengan parameter imshow (Heatmap)
-        heatmap_data = mean_df.set_index('TIME')[threshold_cols].T
-        
-        fig_heat = px.imshow(
-            heatmap_data,
-            labels=dict(x="Waktu Pengamatan (GMT)", y="Ketinggian Awan (ft)", color="Frekuensi (%)"),
-            x=heatmap_data.columns,
-            y=heatmap_data.index,
-            aspect="auto",
-            color_continuous_scale="Turbo"  # Palet ideal untuk intensitas data cuaca
-        )
-        fig_heat.update_layout(
-            xaxis=dict(tickmode='linear', dtick=1),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        
-        st.plotly_chart(fig_heat, theme="streamlit", use_container_width=True)
-        
-        # --- FITUR DOWNLOAD DATA (CSV & PNG) ---
-        st.markdown("---")
-        st.subheader("📥 Unduh Hasil Analisis & Data Tabular")
-        
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
-            csv_data = mean_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📄 Download Nilai Klimatologi (Format CSV)",
-                data=csv_data,
-                file_name="mean_klimatologi_diurnal.csv",
-                mime="text/csv",
+        if mode_grafik == "Rata-rata Distribusi per Jam (GMT)":
+            # Agregasi data rerata berdasarkan waktu GMT
+            df_rata_rata = df_terfilter.groupby('TIME (GMT)')[kolom_kategori_awan].mean().reset_index()
+            df_panjang = df_rata_rata.melt(id_vars=['TIME (GMT)'], value_vars=kolom_kategori_awan, 
+                                           var_name='Ketinggian Dasar Awan (Feet)', value_name='Persentase (%)')
+            
+            fig = px.line(
+                df_panjang, 
+                x='TIME (GMT)', 
+                y='Persentase (%)', 
+                color='Ketinggian Dasar Awan (Feet)',
+                markers=True,
+                title=f"Rata-rata Persentase Kemunculan Dasar Awan per Jam (GMT) — {bulan_terpilih}",
+                labels={'TIME (GMT)': 'Waktu Siklus (GMT)'}
+            )
+            fig.update_layout(xaxis=dict(tickmode='linear', tick0=0, dtick=1))
+            st.plotly_chart(fig, use_container_width=True)
+            
+        else:
+            # Visualisasi detail per tahun terpilih
+            tahun_spesifik = st.selectbox("Pilih Tahun Target:", tahun_terpilih)
+            df_tahun_tunggal = df_terfilter[df_terfilter['YEAR'] == tahun_spesifik]
+            df_panjang_tahun = df_tahun_tunggal.melt(id_vars=['TIME (GMT)'], value_vars=kolom_kategori_awan, 
+                                                     var_name='Ketinggian Dasar Awan (Feet)', value_name='Persentase (%)')
+            
+            fig = px.bar(
+                df_panjang_tahun, 
+                x='TIME (GMT)', 
+                y='Persentase (%)', 
+                color='Ketinggian Dasar Awan (Feet)',
+                barmode='group',
+                title=f"Distribusi Persentase per Jam (GMT) pada Tahun {tahun_spesifik} — {bulan_terpilih}",
+                labels={'TIME (GMT)': 'Waktu Siklus (GMT)'}
+            )
+            fig.update_layout(xaxis=dict(tickmode='linear', tick0=0, dtick=1))
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Tabulasi Data Mentah Terfilter
+        with st.expander("📄 Tampilkan Lembar Data Tabular"):
+            st.dataframe(
+                df_terfilter.style.format({col: "{:.2f}%" for col in kolom_kategori_awan}), 
                 use_container_width=True
             )
-            
-        with col_dl2:
-            st.info("📸 **Unduh Grafik (PNG):** Arahkan kursor Anda ke sudut kanan atas salah satu grafik, lalu klik **ikon kamera**.")
-            
-        # Preview Tabel Ekstensif
-        with st.expander("👁️ Tampilkan Tabel Matriks Klimatologi (Detail)"):
-            st.dataframe(
-                mean_df.style.format({col: "{:.2f}" for col in threshold_cols})
-                       .background_gradient(cmap='Blues', subset=threshold_cols),
-                use_container_width=True,
-                height=400
-            )
-
     else:
-        st.info("👋 **Selamat datang di Dashboard Meteorologi!**")
-        st.write("Silakan unggah file `HS_2021-2025.xlsx` pada panel kontrol di menu sebelah kiri untuk memulai visualisasi.")
-
-if __name__ == "__main__":
-    main()
+        st.warning("Struktur data di dalam file kosong atau tidak dapat diuraikan.")
+else:
+    st.error(f"Berkas data `{nama_file}` tidak dapat ditemukan di root atau folder `data/`.")
+    st.info("Pastikan Anda telah menyertakan semua file bulanan dengan penamaan yang tepat di dalam repositori GitHub Anda.")
