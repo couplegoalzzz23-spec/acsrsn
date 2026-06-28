@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Any
+from typing import List
 
 # =====================================================================
 # KONFIGURASI LOGGING & PAGE
@@ -44,7 +44,6 @@ CATEGORIES = ["<150", "<200", "<300", "<500", "<1000", "<1500"]
 # FUNGSI CSS & STYLING
 # =====================================================================
 def apply_custom_css() -> None:
-    """Mengaplikasikan CSS kustom untuk memberikan tampilan UI/UX profesional."""
     st.markdown("""
         <style>
         .main {
@@ -78,34 +77,71 @@ def apply_custom_css() -> None:
 
 
 # =====================================================================
-# FUNGSI PEMROSESAN DATA
+# FUNGSI PEMROSESAN DATA (SMART LOADER)
 # =====================================================================
-@st.cache_data(show_spinner="Memuat dan memvalidasi data...")
+@st.cache_data(show_spinner="Memindai, membersihkan, dan memvalidasi struktur data Excel...")
 def load_and_validate_data(filepath: Path) -> pd.DataFrame:
     """
-    Membaca file excel, melakukan validasi struktural, tipe data, 
-    dan menangani missing values.
+    Membaca file excel dengan algoritma Smart Loader: 
+    - Mencari letak baris header secara otomatis
+    - Memeriksa seluruh sheet
+    - Membersihkan spasi tersembunyi pada nama kolom
     """
     try:
-        # 1. Validasi Ketersediaan File
         if not filepath.exists():
             raise FileNotFoundError(f"File data '{filepath}' tidak ditemukan di repository.")
+            
+        xl = pd.ExcelFile(filepath, engine="openpyxl")
         
-        # 2. Load Data
-        df = pd.read_excel(filepath, engine="openpyxl")
+        df_valid = None
+        sheet_terdeteksi = ""
         
-        # 3. Validasi Kelengkapan Kolom
-        missing_cols = [col for col in EXPECTED_COLUMNS if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"File Excel kehilangan kolom wajib: {missing_cols}")
+        # 1. Iterasi semua sheet untuk mencari yang mengandung format tabel ACS
+        for sheet in xl.sheet_names:
+            # Baca sampel 15 baris pertama untuk mencari posisi header
+            sample_df = pd.read_excel(filepath, sheet_name=sheet, header=None, nrows=15, engine="openpyxl")
+            
+            header_row = -1
+            for idx, row in sample_df.iterrows():
+                # Bersihkan setiap sel ke bentuk string uppercase bebas spasi
+                row_str = [str(val).strip().upper() for val in row.values]
+                if 'TIME' in row_str or '<150' in row_str:
+                    header_row = idx
+                    break
+                    
+            if header_row != -1:
+                # Baca ulang DataFrame menggunakan index header yang ditemukan
+                temp_df = pd.read_excel(filepath, sheet_name=sheet, header=header_row, engine="openpyxl")
+                
+                # 2. Pembersihan nama kolom (Hapus spasi tersembunyi)
+                temp_df.columns = temp_df.columns.astype(str).str.strip()
+                
+                # 3. Normalisasi Case untuk 'TIME' dan 'YEAR'
+                rename_map = {}
+                for col in temp_df.columns:
+                    if col.upper() == 'TIME': rename_map[col] = 'TIME'
+                    if col.upper() == 'YEAR': rename_map[col] = 'YEAR'
+                temp_df.rename(columns=rename_map, inplace=True)
+                
+                # Cek apakah seluruh 8 kolom wajib sudah ada di temp_df
+                missing = [c for c in EXPECTED_COLUMNS if c not in temp_df.columns]
+                if not missing:
+                    df_valid = temp_df
+                    sheet_terdeteksi = sheet
+                    break # Hentikan pencarian jika menemukan 1 sheet yang memenuhi syarat
+                    
+        if df_valid is None:
+            raise ValueError(f"Sistem tidak dapat menemukan kolom wajib {EXPECTED_COLUMNS} di sheet manapun. Pastikan format tabel di Excel sudah benar.")
+            
+        logger.info(f"Data valid ditemukan pada sheet: '{sheet_terdeteksi}'")
         
         # Ambil kolom yang diperlukan saja sesuai urutan
-        df = df[EXPECTED_COLUMNS]
+        df = df_valid[EXPECTED_COLUMNS].copy()
 
         # 4. Tangani Missing Value & NaN (Isi dengan 0 untuk frekuensi)
         df.fillna(0, inplace=True)
         
-        # 5. Konversi Tipe Data (Memastikan TIME, YEAR, dan nilai persentase numerik)
+        # 5. Konversi Tipe Data
         df['TIME'] = pd.to_numeric(df['TIME'], errors='coerce')
         df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
         for cat in CATEGORIES:
@@ -125,7 +161,6 @@ def load_and_validate_data(filepath: Path) -> pd.DataFrame:
         df.sort_values(by=['YEAR', 'TIME'], inplace=True)
         df.reset_index(drop=True, inplace=True)
         
-        logger.info("Data berhasil divalidasi dan dimuat.")
         return df
 
     except FileNotFoundError as e:
@@ -138,22 +173,15 @@ def load_and_validate_data(filepath: Path) -> pd.DataFrame:
         st.stop()
     except Exception as e:
         logger.error(f"Kesalahan tak terduga saat memuat data: {str(e)}")
-        st.error(f"🚨 Terjadi kesalahan kritis: {str(e)}\nPastikan format file Excel tidak rusak.")
+        st.error(f"🚨 Terjadi kesalahan kritis: {str(e)}")
         st.stop()
 
 
 @st.cache_data(show_spinner="Menghitung rata-rata klimatologi...")
 def get_climatological_mean(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Menghitung mean klimatologi setiap jam secara agregat 
-    dari data tahun 2021 hingga 2025.
-    """
     try:
-        # Kelompokkan berdasarkan jam (TIME) lalu hitung rata-rata
         mean_df = df.groupby('TIME')[CATEGORIES].mean().reset_index()
         mean_df['YEAR'] = "Mean 2021-2025"
-        
-        # Susun ulang kolom agar konsisten
         mean_df = mean_df[['TIME', 'YEAR'] + CATEGORIES]
         return mean_df
     except Exception as e:
@@ -166,10 +194,8 @@ def get_climatological_mean(df: pd.DataFrame) -> pd.DataFrame:
 # FUNGSI VISUALISASI PLOTLY
 # =====================================================================
 def plot_meteogram(df: pd.DataFrame, selected_cats: List[str], title_suffix: str) -> go.Figure:
-    """Membuat Scatter Line Plot (Meteogram) profesional dengan Plotly."""
     try:
         fig = go.Figure()
-        
         color_palette = px.colors.qualitative.Prism
 
         for idx, cat in enumerate(selected_cats):
@@ -190,13 +216,7 @@ def plot_meteogram(df: pd.DataFrame, selected_cats: List[str], title_suffix: str
             xaxis=dict(tickmode='linear', tick0=0, dtick=1, range=[-0.5, 23.5]),
             yaxis=dict(range=[0, max(df[selected_cats].max().max() * 1.1, 1)]),
             hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             template="plotly_white",
             margin=dict(l=40, r=40, t=80, b=40)
         )
@@ -208,9 +228,7 @@ def plot_meteogram(df: pd.DataFrame, selected_cats: List[str], title_suffix: str
 
 
 def plot_heatmap(df: pd.DataFrame, selected_cats: List[str], title_suffix: str) -> go.Figure:
-    """Membuat Heatmap untuk melihat distribusi intensitas frekuensi berdasarkan waktu."""
     try:
-        # Transpose data agar sumbu Y adalah kategori dan sumbu X adalah Waktu
         z_data = df[selected_cats].values.T
         
         fig = go.Figure(data=go.Heatmap(
@@ -241,7 +259,6 @@ def plot_heatmap(df: pd.DataFrame, selected_cats: List[str], title_suffix: str) 
 # FUNGSI STATISTIK & ANALISIS
 # =====================================================================
 def generate_summary_statistics(df: pd.DataFrame, selected_cats: List[str]) -> pd.DataFrame:
-    """Menghitung ringkasan statistik (Max, Min, Mean, dll) untuk kategori terpilih."""
     try:
         stats_list = []
         for cat in selected_cats:
@@ -256,7 +273,6 @@ def generate_summary_statistics(df: pd.DataFrame, selected_cats: List[str]) -> p
                 "Range (%)": series.max() - series.min()
             })
         stats_df = pd.DataFrame(stats_list)
-        # Pembulatan desimal untuk presentasi
         return stats_df.round(2)
     except Exception as e:
         logger.error(f"Error calculating stats: {str(e)}")
@@ -264,7 +280,6 @@ def generate_summary_statistics(df: pd.DataFrame, selected_cats: List[str]) -> p
 
 
 def generate_auto_interpretation(df: pd.DataFrame, selected_cats: List[str], mode: str) -> str:
-    """Menghasilkan interpretasi saintifik secara otomatis dari dataset yang ditampilkan."""
     try:
         if df.empty or not selected_cats:
             return "Data tidak tersedia untuk memberikan interpretasi."
@@ -273,7 +288,6 @@ def generate_auto_interpretation(df: pd.DataFrame, selected_cats: List[str], mod
         global_max = all_vals.max()
         global_mean = all_vals.mean()
         
-        # Mencari kategori dan waktu di mana nilai maksimum terjadi
         max_loc = df[selected_cats].max().idxmax()
         max_time = df.loc[df[max_loc].idxmax(), 'TIME']
         
@@ -285,11 +299,11 @@ def generate_auto_interpretation(df: pd.DataFrame, selected_cats: List[str], mod
         interpretation = f"""
         **Interpretasi Klimatologis ({mode}):**
         
-        Berdasarkan analisis distribusi temporal frekuensi *Lowest Cloud Base*, fenomena kejadian tertinggi terpantau pada kategori **{max_loc} ft** dengan persentase **{global_max:.2f}%** yang terjadi secara dominan pada jam **{max_time:02d}:00 UTC**. 
+        Berdasarkan analisis distribusi temporal frekuensi *Lowest Cloud Base*, kejadian puncak terpantau pada kategori **{max_loc} ft** dengan probabilitas **{global_max:.2f}%** yang terbentuk secara dominan pada jam **{max_time:02d}:00 UTC**. 
         Sebaliknya, frekuensi terendah tercatat pada kategori **{min_loc} ft** di jam **{min_time:02d}:00 UTC**.
         
-        Secara agregat untuk kategori yang dianalisis, rerata probabilitas kemunculan awan berada pada angka **{global_mean:.2f}%** dengan variabilitas (*range*) sebesar **{range_val:.2f}%**. 
-        Pola diurnal ini mengindikasikan sensitivitas perawanan terhadap dinamika pemanasan radiatif permukaan dan stabilitas atmosfer lapisan batas lokal di area bandar udara.
+        Secara agregat, rerata frekuensi basis awan untuk profil yang dianalisis ini berada pada angka **{global_mean:.2f}%** dengan variabilitas rentang (*range*) sebesar **{range_val:.2f}%**. 
+        Pola diurnal ini merepresentasikan efek dari variasi siklus pemanasan radiatif lokal di wilayah pangkalan terhadap batas stabilitas atmosfer.
         """
         return interpretation
     except Exception as e:
@@ -321,7 +335,6 @@ def main():
         default=CATEGORIES
     )
     
-    # Validasi jika tidak ada kategori yang dipilih
     if not selected_cats:
         st.warning("⚠️ Silakan pilih setidaknya satu kategori di sidebar untuk menampilkan visualisasi.")
         st.stop()
@@ -343,7 +356,6 @@ def main():
         period_title = f"Tahun {selected_year}"
         num_years = 1
         
-    # Pastikan data diurutkan berdasarkan jam sebelum di-plot
     display_df.sort_values('TIME', inplace=True)
     display_df.reset_index(drop=True, inplace=True)
 
@@ -351,9 +363,8 @@ def main():
     st.title("☁️ Aerodrome Climatological Summary")
     st.subheader(f"Analisis Pola Diurnal Lowest Cloud Base ({period_title})")
     st.markdown("""
-        Dashboard operasional ini menampilkan distribusi frekuensi persentase kejadian 
-        ketinggian dasar awan terendah (*Lowest Cloud Base*) dalam resolusi temporal per jam (UTC). 
-        Digunakan untuk mendukung kewaspadaan operasional penerbangan taktis maupun sipil.
+        Dashboard operasional ini menampilkan distribusi frekuensi kejadian 
+        ketinggian dasar awan terendah (*Lowest Cloud Base*) dalam resolusi temporal per jam (UTC).
     """)
     st.markdown("---")
     
@@ -367,7 +378,7 @@ def main():
         st.markdown(f'<div class="metric-card"><div class="metric-title">Kategori Dianalisis</div><div class="metric-value">{len(selected_cats)}</div></div>', unsafe_allow_html=True)
     with col4:
         overall_mean = display_df[selected_cats].values.mean()
-        st.markdown(f'<div class="metric-card"><div class="metric-title">Rata-rata Persentase Keseluruhan</div><div class="metric-value">{overall_mean:.2f}%</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-title">Rata-rata Persentase</div><div class="metric-value">{overall_mean:.2f}%</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -380,7 +391,6 @@ def main():
         fig_meteogram = plot_meteogram(display_df, selected_cats, period_title)
         st.plotly_chart(fig_meteogram, use_container_width=True, config={'displayModeBar': True})
         
-        # Tombol Download HTML Plot
         try:
             html_meteogram = fig_meteogram.to_html()
             st.download_button(
@@ -396,7 +406,6 @@ def main():
         fig_heatmap = plot_heatmap(display_df, selected_cats, period_title)
         st.plotly_chart(fig_heatmap, use_container_width=True, config={'displayModeBar': True})
         
-        # Tombol Download HTML Heatmap
         try:
             html_heatmap = fig_heatmap.to_html()
             st.download_button(
@@ -426,7 +435,6 @@ def main():
             }
         )
         
-        # Download Data CSV
         try:
             csv_data = display_df[['TIME'] + selected_cats].to_csv(index=False).encode('utf-8')
             st.download_button(
